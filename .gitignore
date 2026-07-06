@@ -1,0 +1,8 @@
+.env
+.venv/
+.runtime/
+reports/
+__pycache__/
+*.pyc
+*.log
+data/price_history.sqlite

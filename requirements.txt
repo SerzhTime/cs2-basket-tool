@@ -1,0 +1,8 @@
+streamlit>=1.36
+pandas>=2.2
+openpyxl>=3.1
+plotly>=5.22
+python-dotenv>=1.0
+requests>=2.32
+beautifulsoup4>=4.12
+pynacl>=1.5

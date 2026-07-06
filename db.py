@@ -1,0 +1,674 @@
+from __future__ import annotations
+
+import sqlite3
+import os
+import json
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable
+
+from adapters import BasketItem, PriceResult, build_adapter_registry
+
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR / "data"
+DB_PATH = DATA_DIR / "price_history.sqlite"
+BASKET_PATH = DATA_DIR / "basket.xlsx"
+BASELINE_MARKETPLACE = "HaloSkins"
+MIN_SNAPSHOT_SUCCESS_RATE = 0.5
+REMOVED_MOCK_ADAPTER_KEYS = {
+    "skinswap_mock",
+    "csfloat_mock",
+    "skinplace_mock",
+    "whitemarket_mock",
+    "csmoney_mock",
+    "shadowpay_mock",
+}
+REMOVED_MOCK_MARKETPLACES = {
+    "SkinSwap Mock",
+    "CSFloat Mock",
+    "Skin.Place Mock",
+    "White.market",
+    "CS.Money Mock",
+    "ShadowPay Mock",
+}
+
+
+@contextmanager
+def connect():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        yield con
+        con.commit()
+    finally:
+        con.close()
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def init_db() -> None:
+    with connect() as con:
+        con.executescript(
+            """
+            PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS basket_items (
+                item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market_hash_name TEXT NOT NULL UNIQUE,
+                active INTEGER NOT NULL DEFAULT 1,
+                multiplier INTEGER NOT NULL DEFAULT 1,
+                notes TEXT NOT NULL DEFAULT '',
+                source_rank INTEGER,
+                source_amount REAL,
+                price_compare_url TEXT,
+                priceempire_url TEXT,
+                steamanalyst_url TEXT,
+                marketplace_links_json TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS marketplaces (
+                adapter_key TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                is_baseline INTEGER NOT NULL DEFAULT 0,
+                requires_credentials INTEGER NOT NULL DEFAULT 0,
+                last_status TEXT,
+                last_error TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS snapshots (
+                snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS price_points (
+                price_point_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                marketplace TEXT NOT NULL,
+                item_id INTEGER,
+                market_hash_name TEXT NOT NULL,
+                price REAL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                normalized_price REAL,
+                normalized_currency TEXT NOT NULL DEFAULT 'USD',
+                stock_count INTEGER,
+                fetch_status TEXT NOT NULL,
+                error_details TEXT,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY(snapshot_id) REFERENCES snapshots(snapshot_id),
+                FOREIGN KEY(item_id) REFERENCES basket_items(item_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_price_points_snapshot
+                ON price_points(snapshot_id, marketplace);
+            CREATE INDEX IF NOT EXISTS idx_price_points_history
+                ON price_points(marketplace, timestamp);
+            """
+        )
+        ensure_column(con, "basket_items", "multiplier", "INTEGER NOT NULL DEFAULT 1")
+        ensure_column(con, "basket_items", "price_compare_url", "TEXT")
+        ensure_column(con, "basket_items", "priceempire_url", "TEXT")
+        ensure_column(con, "basket_items", "steamanalyst_url", "TEXT")
+        ensure_column(con, "basket_items", "marketplace_links_json", "TEXT")
+        remove_mock_marketplaces(con)
+        prune_low_quality_snapshots(con, MIN_SNAPSHOT_SUCCESS_RATE)
+    seed_marketplaces()
+
+
+def ensure_column(con: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def remove_mock_marketplaces(con: sqlite3.Connection) -> None:
+    key_placeholders = ",".join("?" for _ in REMOVED_MOCK_ADAPTER_KEYS)
+    name_placeholders = ",".join("?" for _ in REMOVED_MOCK_MARKETPLACES)
+    con.execute(
+        f"DELETE FROM marketplaces WHERE adapter_key IN ({key_placeholders})",
+        tuple(REMOVED_MOCK_ADAPTER_KEYS),
+    )
+    con.execute(
+        f"DELETE FROM price_points WHERE marketplace IN ({name_placeholders})",
+        tuple(REMOVED_MOCK_MARKETPLACES),
+    )
+
+
+def seed_marketplaces() -> None:
+    registry = build_adapter_registry()
+    defaults_enabled = {
+        "haloskins",
+        "csfloat",
+        "waxpeer",
+        "c5game",
+        "dmarket",
+        "marketcsgo",
+        "openskin_skinport",
+        "openskin_buff163",
+        "openskin_youpin",
+        "openskin_steam",
+        "csgoskins_csmoney",
+        "csgoskins_lis_skins",
+        "csgoskins_aim_market",
+        "csgoskins_skin_land",
+        "csgoskins_skinbaron",
+        "csgoskins_skins_com",
+        "csgoskins_exeskins",
+        "csgoskins_avan_market",
+        "csgoskins_skinvault",
+        "csgoskins_uuskins",
+        "csgoskins_tradeit",
+        "csgoskins_skinplace",
+        "csgoskins_shadowpay",
+        "csgoskins_skinswap",
+    }
+    now = utc_now_iso()
+    with connect() as con:
+        for key, adapter in registry.items():
+            con.execute(
+                """
+                INSERT INTO marketplaces (
+                    adapter_key, name, enabled, is_baseline,
+                    requires_credentials, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(adapter_key) DO UPDATE SET
+                    name = excluded.name,
+                    is_baseline = excluded.is_baseline,
+                    requires_credentials = excluded.requires_credentials
+                """,
+                (
+                    key,
+                    adapter.name,
+                    1 if key in defaults_enabled else 0,
+                    1 if adapter.name == BASELINE_MARKETPLACE else 0,
+                    1 if adapter.requires_credentials else 0,
+                    now,
+                ),
+            )
+
+
+def basket_is_empty() -> bool:
+    with connect() as con:
+        row = con.execute("SELECT COUNT(*) AS c FROM basket_items").fetchone()
+        return int(row["c"]) == 0
+
+
+def _json_or_none(value) -> str | None:
+    if not isinstance(value, dict) or not value:
+        return None
+    clean = {str(key): str(url) for key, url in value.items() if key and url}
+    return json.dumps(clean, ensure_ascii=False, sort_keys=True) if clean else None
+
+
+def _json_to_dict(value) -> dict[str, str]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): str(url) for key, url in parsed.items() if key and url}
+
+
+def insert_basket_items(rows: Iterable[dict]) -> int:
+    now = utc_now_iso()
+    count = 0
+    with connect() as con:
+        for row in rows:
+            name = str(row["market_hash_name"]).strip()
+            if not name:
+                continue
+            con.execute(
+                """
+                INSERT INTO basket_items (
+                    market_hash_name, active, multiplier, notes, source_rank,
+                    source_amount, price_compare_url, priceempire_url,
+                    steamanalyst_url, marketplace_links_json, created_at
+                )
+                VALUES (?, 1, 1, '', ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(market_hash_name) DO UPDATE SET
+                    source_rank = COALESCE(excluded.source_rank, basket_items.source_rank),
+                    source_amount = COALESCE(excluded.source_amount, basket_items.source_amount),
+                    price_compare_url = COALESCE(excluded.price_compare_url, basket_items.price_compare_url),
+                    priceempire_url = COALESCE(excluded.priceempire_url, basket_items.priceempire_url),
+                    steamanalyst_url = COALESCE(excluded.steamanalyst_url, basket_items.steamanalyst_url),
+                    marketplace_links_json = COALESCE(excluded.marketplace_links_json, basket_items.marketplace_links_json)
+                """,
+                (
+                    name,
+                    row.get("rank"),
+                    row.get("source_amount"),
+                    row.get("price_compare_url"),
+                    row.get("priceempire_url"),
+                    row.get("steamanalyst_url"),
+                    _json_or_none(row.get("marketplace_links")),
+                    now,
+                ),
+            )
+            if con.execute("SELECT changes() AS changes_count").fetchone()["changes_count"]:
+                count += 1
+    return count
+
+
+def get_basket_items(active_only: bool = False) -> list[sqlite3.Row]:
+    sql = "SELECT * FROM basket_items"
+    if active_only:
+        sql += " WHERE active = 1"
+    sql += " ORDER BY COALESCE(source_rank, item_id), item_id"
+    with connect() as con:
+        return list(con.execute(sql).fetchall())
+
+
+def get_adapter_items() -> list[BasketItem]:
+    return [
+        BasketItem(
+            item_id=int(row["item_id"]),
+            market_hash_name=row["market_hash_name"],
+            price_compare_url=row["price_compare_url"],
+            priceempire_url=row["priceempire_url"],
+            steamanalyst_url=row["steamanalyst_url"],
+            marketplace_links=_json_to_dict(row["marketplace_links_json"]),
+        )
+        for row in get_basket_items(active_only=True)
+    ]
+
+
+def update_basket_items(rows: Iterable[dict]) -> None:
+    with connect() as con:
+        for row in rows:
+            con.execute(
+                """
+                UPDATE basket_items
+                SET active = ?, multiplier = ?, notes = ?
+                WHERE item_id = ?
+                """,
+                (
+                    1 if row.get("active") else 0,
+                    min(1000, max(1, int(row.get("multiplier") or 1))),
+                    row.get("notes") or "",
+                    int(row["item_id"]),
+                ),
+            )
+
+
+def get_marketplaces() -> list[sqlite3.Row]:
+    with connect() as con:
+        return list(
+            con.execute(
+                """
+                SELECT *
+                FROM marketplaces
+                ORDER BY is_baseline DESC, name COLLATE NOCASE
+                """
+            ).fetchall()
+        )
+
+
+def get_enabled_adapter_keys() -> list[str]:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT adapter_key
+            FROM marketplaces
+            WHERE enabled = 1 OR is_baseline = 1
+            ORDER BY is_baseline DESC, name COLLATE NOCASE
+            """
+        ).fetchall()
+    return [row["adapter_key"] for row in rows]
+
+
+def update_marketplace_settings(rows: Iterable[dict]) -> None:
+    now = utc_now_iso()
+    with connect() as con:
+        for row in rows:
+            enabled = 1 if row.get("enabled") or row.get("is_baseline") else 0
+            con.execute(
+                """
+                UPDATE marketplaces
+                SET enabled = ?, updated_at = ?
+                WHERE adapter_key = ?
+                """,
+                (enabled, now, row["adapter_key"]),
+            )
+
+
+def save_snapshot_results(results: Iterable[PriceResult]) -> tuple[int, str]:
+    timestamp = utc_now_iso()
+    item_map = {row["market_hash_name"]: int(row["item_id"]) for row in get_basket_items()}
+    status_by_marketplace: dict[str, list[tuple[str, str | None]]] = {}
+    with connect() as con:
+        cur = con.execute("INSERT INTO snapshots(timestamp) VALUES (?)", (timestamp,))
+        snapshot_id = int(cur.lastrowid)
+        for result in results:
+            normalized_price = normalize_to_usd(result.price, result.currency)
+            con.execute(
+                """
+                INSERT INTO price_points (
+                    snapshot_id, marketplace, item_id, market_hash_name,
+                    price, currency, normalized_price, normalized_currency,
+                    stock_count, fetch_status, error_details, timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    result.marketplace,
+                    item_map.get(result.market_hash_name),
+                    result.market_hash_name,
+                    result.price,
+                    result.currency,
+                    normalized_price,
+                    result.stock_count,
+                    result.fetch_status,
+                    result.error_details,
+                    timestamp,
+                ),
+            )
+            status_by_marketplace.setdefault(result.marketplace, []).append(
+                (result.fetch_status, result.error_details)
+            )
+
+        for marketplace, statuses in status_by_marketplace.items():
+            status, error = summarize_fetch_status(statuses)
+            con.execute(
+                """
+                UPDATE marketplaces
+                SET last_status = ?, last_error = ?, updated_at = ?
+                WHERE name = ?
+                """,
+                (status, error, timestamp, marketplace),
+            )
+    return snapshot_id, timestamp
+
+
+def prune_low_quality_snapshots(
+    con: sqlite3.Connection,
+    min_success_rate: float = MIN_SNAPSHOT_SUCCESS_RATE,
+) -> int:
+    rows = con.execute(
+        """
+        SELECT
+            s.snapshot_id,
+            COUNT(pp.price_point_id) AS total_count,
+            SUM(
+                CASE
+                    WHEN pp.fetch_status = 'ok' AND pp.normalized_price IS NOT NULL
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS success_count
+        FROM snapshots s
+        LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
+        GROUP BY s.snapshot_id
+        """
+    ).fetchall()
+    snapshot_ids = [
+        int(row["snapshot_id"])
+        for row in rows
+        if int(row["total_count"] or 0) == 0
+        or (float(row["success_count"] or 0) / float(row["total_count"])) < min_success_rate
+    ]
+    if not snapshot_ids:
+        return 0
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    con.execute(f"DELETE FROM price_points WHERE snapshot_id IN ({placeholders})", snapshot_ids)
+    con.execute(f"DELETE FROM snapshots WHERE snapshot_id IN ({placeholders})", snapshot_ids)
+    return len(snapshot_ids)
+
+
+def summarize_fetch_status(statuses: list[tuple[str, str | None]]) -> tuple[str, str | None]:
+    total = len(statuses)
+    ok_count = sum(1 for status, _ in statuses if status == "ok")
+    missing_count = sum(1 for status, _ in statuses if status == "missing")
+    error_count = sum(1 for status, _ in statuses if status == "error")
+    first_error = next((error for _, error in statuses if error), None)
+
+    if ok_count == total:
+        return "ok", None
+    if error_count == total:
+        return "error", first_error
+    if missing_count == total:
+        return "missing", first_error
+    summary = f"{ok_count} ok, {missing_count} missing"
+    if error_count:
+        summary += f", {error_count} error"
+    return "partial", summary
+
+
+def normalize_to_usd(price: float | None, currency: str) -> float | None:
+    if price is None:
+        return None
+    currency = (currency or "USD").upper()
+    if currency == "USD":
+        return price
+    rate = os.getenv(f"FX_{currency}_TO_USD")
+    if not rate:
+        return None
+    try:
+        return price * float(rate)
+    except ValueError:
+        return None
+
+
+def latest_snapshot() -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM snapshots ORDER BY snapshot_id DESC LIMIT 1"
+        ).fetchone()
+
+
+def latest_price_points() -> list[sqlite3.Row]:
+    snapshot = latest_snapshot()
+    if snapshot is None:
+        return []
+    with connect() as con:
+        return list(
+            con.execute(
+                """
+                SELECT pp.*, bi.active, bi.multiplier
+                FROM price_points pp
+                LEFT JOIN basket_items bi ON bi.item_id = pp.item_id
+                WHERE pp.snapshot_id = ?
+                ORDER BY pp.marketplace, pp.market_hash_name
+                """,
+                (snapshot["snapshot_id"],),
+            ).fetchall()
+        )
+
+
+def update_latest_missing_price_points(marketplace: str, results: Iterable[PriceResult]) -> int:
+    snapshot = latest_snapshot()
+    if snapshot is None:
+        return 0
+
+    item_map = {row["market_hash_name"]: int(row["item_id"]) for row in get_basket_items()}
+    timestamp = snapshot["timestamp"]
+    updated_count = 0
+    with connect() as con:
+        for result in results:
+            if result.marketplace != marketplace:
+                continue
+            normalized_price = normalize_to_usd(result.price, result.currency)
+            if result.fetch_status != "ok" or normalized_price is None:
+                continue
+
+            existing = con.execute(
+                """
+                SELECT fetch_status, normalized_price
+                FROM price_points
+                WHERE snapshot_id = ? AND marketplace = ? AND market_hash_name = ?
+                """,
+                (snapshot["snapshot_id"], marketplace, result.market_hash_name),
+            ).fetchone()
+            if existing and existing["fetch_status"] == "ok" and existing["normalized_price"] is not None:
+                continue
+
+            if existing:
+                con.execute(
+                    """
+                    UPDATE price_points
+                    SET price = ?,
+                        currency = ?,
+                        normalized_price = ?,
+                        normalized_currency = 'USD',
+                        stock_count = ?,
+                        fetch_status = ?,
+                        error_details = ?,
+                        timestamp = ?
+                    WHERE snapshot_id = ? AND marketplace = ? AND market_hash_name = ?
+                    """,
+                    (
+                        result.price,
+                        result.currency,
+                        normalized_price,
+                        result.stock_count,
+                        result.fetch_status,
+                        result.error_details,
+                        timestamp,
+                        snapshot["snapshot_id"],
+                        marketplace,
+                        result.market_hash_name,
+                    ),
+                )
+            else:
+                con.execute(
+                    """
+                    INSERT INTO price_points (
+                        snapshot_id, marketplace, item_id, market_hash_name,
+                        price, currency, normalized_price, normalized_currency,
+                        stock_count, fetch_status, error_details, timestamp
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot["snapshot_id"],
+                        marketplace,
+                        item_map.get(result.market_hash_name),
+                        result.market_hash_name,
+                        result.price,
+                        result.currency,
+                        normalized_price,
+                        result.stock_count,
+                        result.fetch_status,
+                        result.error_details,
+                        timestamp,
+                    ),
+                )
+            updated_count += 1
+
+        refresh_marketplace_status(con, marketplace, int(snapshot["snapshot_id"]), timestamp)
+    return updated_count
+
+
+def refresh_marketplace_status(
+    con: sqlite3.Connection,
+    marketplace: str,
+    snapshot_id: int,
+    timestamp: str,
+) -> None:
+    rows = con.execute(
+        """
+        SELECT fetch_status, error_details
+        FROM price_points
+        WHERE snapshot_id = ? AND marketplace = ?
+        """,
+        (snapshot_id, marketplace),
+    ).fetchall()
+    if not rows:
+        return
+    status, error = summarize_fetch_status(
+        [(row["fetch_status"], row["error_details"]) for row in rows]
+    )
+    con.execute(
+        """
+        UPDATE marketplaces
+        SET last_status = ?, last_error = ?, updated_at = ?
+        WHERE name = ?
+        """,
+        (status, error, timestamp, marketplace),
+    )
+
+
+def history_totals(since_iso: str | None = None) -> list[sqlite3.Row]:
+    params: list[str] = []
+    where = "WHERE bi.active = 1"
+    if since_iso:
+        where += " AND s.timestamp >= ?"
+        params.append(since_iso)
+    with connect() as con:
+        return list(
+            con.execute(
+                f"""
+                WITH snapshot_marketplaces AS (
+                    SELECT DISTINCT snapshot_id, marketplace
+                    FROM price_points
+                )
+                SELECT
+                    s.snapshot_id,
+                    s.timestamp,
+                    sm.marketplace,
+                    SUM(
+                        COALESCE(
+                            pp.normalized_price,
+                            CASE
+                                WHEN sm.marketplace IN ('Buff163', 'YouPin')
+                                THEN COALESCE(c5game.normalized_price, baseline.normalized_price)
+                                WHEN sm.marketplace != ? THEN baseline.normalized_price
+                                ELSE NULL
+                            END
+                        ) * MIN(MAX(COALESCE(bi.multiplier, 1), 1), 1000)
+                    ) AS total_cost,
+                    COUNT(pp.normalized_price) AS available_count,
+                    SUM(
+                        CASE
+                            WHEN sm.marketplace != ?
+                                AND pp.normalized_price IS NULL
+                                AND (
+                                    baseline.normalized_price IS NOT NULL
+                                    OR (
+                                        sm.marketplace IN ('Buff163', 'YouPin')
+                                        AND c5game.normalized_price IS NOT NULL
+                                    )
+                                )
+                            THEN 1
+                            ELSE 0
+                        END
+                    ) AS fallback_count
+                FROM snapshots s
+                JOIN snapshot_marketplaces sm ON sm.snapshot_id = s.snapshot_id
+                JOIN basket_items bi ON bi.active = 1
+                LEFT JOIN price_points pp
+                    ON pp.snapshot_id = s.snapshot_id
+                    AND pp.marketplace = sm.marketplace
+                    AND pp.item_id = bi.item_id
+                    AND pp.fetch_status = 'ok'
+                    AND pp.normalized_price IS NOT NULL
+                LEFT JOIN price_points baseline
+                    ON baseline.snapshot_id = s.snapshot_id
+                    AND baseline.marketplace = ?
+                    AND baseline.item_id = bi.item_id
+                    AND baseline.fetch_status = 'ok'
+                    AND baseline.normalized_price IS NOT NULL
+                LEFT JOIN price_points c5game
+                    ON c5game.snapshot_id = s.snapshot_id
+                    AND c5game.marketplace = 'C5Game'
+                    AND c5game.item_id = bi.item_id
+                    AND c5game.fetch_status = 'ok'
+                    AND c5game.normalized_price IS NOT NULL
+                {where}
+                GROUP BY s.snapshot_id, s.timestamp, sm.marketplace
+                HAVING total_cost IS NOT NULL
+                ORDER BY s.timestamp, sm.marketplace
+                """,
+                [BASELINE_MARKETPLACE, BASELINE_MARKETPLACE, BASELINE_MARKETPLACE, *params],
+            ).fetchall()
+        )
