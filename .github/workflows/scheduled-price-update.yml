@@ -21,6 +21,10 @@ jobs:
       HALOSKINS_LOWEST_PRICE_URL: ${{ secrets.HALOSKINS_LOWEST_PRICE_URL }}
       MARKETCSGO_API_KEY: ${{ secrets.MARKETCSGO_API_KEY }}
       WAXPEER_API_KEY: ${{ secrets.WAXPEER_API_KEY }}
+      CSGOSKINS_FETCH_MODE: reader
+      CSGOSKINS_READER_URL_TEMPLATE: https://r.jina.ai/http://{url}
+      CSGOSKINS_DELAY_SECONDS: "4.0"
+      CSGOSKINS_DELAY_JITTER_SECONDS: "4.0"
     steps:
       - uses: actions/checkout@v4
 

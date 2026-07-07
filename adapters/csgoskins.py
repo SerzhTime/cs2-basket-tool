@@ -255,7 +255,10 @@ def _parse_offers(html: str) -> dict[str, _Offer]:
         marketplace = _extract_marketplace(node, text)
         if not marketplace:
             continue
-        offers[_normalize_marketplace(marketplace)] = _Offer(
+        key = _normalize_marketplace(marketplace)
+        if key in offers:
+            continue
+        offers[key] = _Offer(
             marketplace=marketplace,
             price=price,
             stock_count=_parse_stock(text),

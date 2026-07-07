@@ -73,6 +73,36 @@ API_REPAIR_WITH_COMPARE_BACKUP = {"Buff163", "YouPin", "Steam"}
 STEAM_MARKETPLACE = "Steam"
 
 
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_latest_snapshot() -> dict | None:
+    row = db.latest_snapshot()
+    return dict(row) if row else None
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_latest_price_points() -> list[dict]:
+    return [dict(row) for row in db.latest_price_points()]
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_basket_items(active_only: bool = False) -> list[dict]:
+    return [dict(row) for row in db.get_basket_items(active_only=active_only)]
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_marketplaces() -> list[dict]:
+    return [dict(row) for row in db.get_marketplaces()]
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_history_totals(since_iso: str | None = None) -> list[dict]:
+    return [dict(row) for row in db.history_totals(since_iso=since_iso)]
+
+
+def clear_data_cache() -> None:
+    st.cache_data.clear()
+
+
 def main() -> None:
     st.set_page_config(page_title="CS2 Basket Price Comparison", layout="wide")
     st.markdown(
@@ -438,7 +468,10 @@ def main() -> None:
     )
 
     db.init_db()
-    sync_basket_file()
+    if not st.session_state.get("basket_file_synced"):
+        sync_basket_file()
+        st.session_state.basket_file_synced = True
+        clear_data_cache()
 
     title_cols = st.columns([5, 1.15], vertical_alignment="top")
     with title_cols[0]:
@@ -462,6 +495,7 @@ def main() -> None:
                 f"Saved snapshot #{snapshot_id} at {format_timestamp_utc8(timestamp)} "
                 f"({success_rate:.0%} data received)."
             )
+            clear_data_cache()
         st.rerun()
     if "update_notice" in st.session_state:
         st.toast(st.session_state.pop("update_notice"))
@@ -494,7 +528,7 @@ def sync_basket_file() -> None:
 
 
 def render_last_updated_meta(status: str | None = None) -> None:
-    snapshot = db.latest_snapshot()
+    snapshot = cached_latest_snapshot()
     status_html = f'<span class="meta-status">{escape(status)}</span>' if status else ""
     if snapshot is None:
         st.markdown(
@@ -517,13 +551,13 @@ def render_update_status(status: str | None = None) -> None:
 
 
 def render_current_comparison() -> None:
-    snapshot = db.latest_snapshot()
+    snapshot = cached_latest_snapshot()
     if snapshot is None:
         st.info("Click Update prices to create the first local snapshot.")
         return
 
-    items = db.get_basket_items(active_only=False)
-    points = db.latest_price_points()
+    items = cached_basket_items(active_only=False)
+    points = cached_latest_price_points()
     marketplace_order = enabled_marketplace_names()
     comparison, _ = build_comparison_table(items, points, marketplace_order)
     market_options = [name for name in marketplace_order if name != BASELINE_MARKETPLACE]
@@ -709,6 +743,7 @@ def render_manual_market_repair(marketplace_order: list[str]) -> None:
                 st.session_state.manual_repair_error = str(exc)
             else:
                 st.session_state.manual_repair_result = "\n".join(result_lines)
+                clear_data_cache()
         st.rerun()
 
 
@@ -1382,7 +1417,7 @@ def collect_snapshot() -> tuple[int, str, float]:
 
 def render_fetch_status() -> None:
     st.subheader("Adapter Status")
-    rows = [dict(row) for row in db.get_marketplaces() if row["enabled"] or row["is_baseline"]]
+    rows = [row for row in cached_marketplaces() if row["enabled"] or row["is_baseline"]]
     if not rows:
         st.caption("No marketplaces enabled.")
         return
@@ -1398,7 +1433,7 @@ def render_history() -> None:
         default="all",
     )
     since = since_for_range(range_label)
-    rows = db.history_totals(since_iso=since)
+    rows = cached_history_totals(since_iso=since)
     if not rows:
         st.info("No historical snapshots match this time range.")
         return
@@ -1505,7 +1540,7 @@ def since_for_range(label: str | None) -> str | None:
 
 
 def render_basket_items() -> None:
-    rows = [dict(row) for row in db.get_basket_items(active_only=False)]
+    rows = cached_basket_items(active_only=False)
     if not rows:
         st.warning("No basket items are stored.")
         return
@@ -1553,6 +1588,7 @@ def render_basket_items() -> None:
     )
     if st.button("Save basket item changes", type="primary"):
         db.update_basket_items(edited.to_dict("records"))
+        clear_data_cache()
         st.success("Basket item changes saved.")
         st.rerun()
 
@@ -1561,12 +1597,12 @@ def render_basket_items() -> None:
 
 def render_item_update_status(items: list[dict]) -> None:
     st.subheader("Last Update Item Status")
-    snapshot = db.latest_snapshot()
+    snapshot = cached_latest_snapshot()
     if snapshot is None:
         st.caption("No saved snapshot yet.")
         return
 
-    points = db.latest_price_points()
+    points = cached_latest_price_points()
     status_rows = build_item_update_status_rows(items, points, snapshot["timestamp"])
     if not status_rows:
         st.caption("No item status rows are available for the latest snapshot.")
@@ -1714,7 +1750,7 @@ def summarize_market_list(markets) -> str:
 def render_marketplace_settings() -> None:
     registry = build_adapter_registry()
     rows = []
-    for row in db.get_marketplaces():
+    for row in cached_marketplaces():
         adapter = registry.get(row["adapter_key"])
         rows.append(
             {
@@ -1753,6 +1789,7 @@ def render_marketplace_settings() -> None:
     st.caption(f"{BASELINE_MARKETPLACE} is always enabled because all differences use it as the baseline.")
     if st.button("Save marketplace settings", type="primary"):
         db.update_marketplace_settings(edited.to_dict("records"))
+        clear_data_cache()
         st.success("Marketplace settings saved.")
         st.rerun()
 
@@ -1762,13 +1799,13 @@ def render_marketplace_settings() -> None:
 
 def render_marketplace_coverage() -> None:
     st.subheader("Marketplace Coverage")
-    snapshot = db.latest_snapshot()
+    snapshot = cached_latest_snapshot()
     if snapshot is None:
         st.caption("No saved snapshot yet.")
         return
 
-    items = db.get_basket_items(active_only=False)
-    points = db.latest_price_points()
+    items = cached_basket_items(active_only=False)
+    points = cached_latest_price_points()
     _, coverage = build_comparison_table(items, points, enabled_marketplace_names())
     st.dataframe(
         format_simple_table(coverage, {"Total cost": lambda value: "N/A" if pd.isna(value) else f"${value:,.2f}"}),
@@ -1778,7 +1815,7 @@ def render_marketplace_coverage() -> None:
 
 
 def enabled_marketplace_names() -> list[str]:
-    rows = db.get_marketplaces()
+    rows = cached_marketplaces()
     names = [row["name"] for row in rows if row["enabled"] or row["is_baseline"]]
     if BASELINE_MARKETPLACE in names:
         names = [BASELINE_MARKETPLACE] + [name for name in names if name != BASELINE_MARKETPLACE]
