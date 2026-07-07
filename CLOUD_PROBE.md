@@ -17,7 +17,8 @@ Local results show your current network behavior. They are useful as a baseline,
 1. Push this app folder to a GitHub repository.
 2. In GitHub, open `Settings -> Secrets and variables -> Actions`.
 3. Add only the secrets you want to test:
-   - `HALOSKINS_API_KEY` or `HALOSKINS_LOWEST_PRICE_URL`
+   - `HALOSKINS_LOWEST_PRICE_URL` if your HaloSkins key is already embedded in the full API link
+   - `HALOSKINS_API_KEY` only if you want the app to build the HaloSkins URL from the key
    - `CSFLOAT_API_KEY`
    - `C5GAME_APP_KEY`
    - `EXCHANGERATE_USD_LATEST_URL`
