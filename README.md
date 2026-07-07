@@ -41,6 +41,8 @@ Open the local URL shown by Streamlit, usually `http://localhost:8501`.
 
 To test whether APIs and marketplace pages tolerate cloud/datacenter IPs before deployment, see `CLOUD_PROBE.md`.
 
+For the online Streamlit + Neon deployment checklist, see `DEPLOYMENT.md`.
+
 ## Mixed local/cloud database mode
 
 By default the app uses local SQLite at `data/price_history.sqlite`. If `DATABASE_URL` is set in `.env`, GitHub Actions secrets, or Streamlit secrets, the same `db.py` interface uses Postgres instead. This lets the local app, online Streamlit app, and scheduled GitHub Actions updates read and write the same shared history.

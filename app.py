@@ -4,6 +4,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 from html import escape
 import json
+import os
 import re
 
 import pandas as pd
@@ -26,6 +27,23 @@ from calculations import (
 
 
 load_dotenv(db.APP_DIR / ".env")
+
+
+def load_streamlit_secrets_into_env() -> None:
+    try:
+        secrets = st.secrets
+        keys = list(secrets.keys())
+    except Exception:
+        return
+    for key in keys:
+        if key in os.environ:
+            continue
+        value = secrets.get(key)
+        if isinstance(value, (str, int, float, bool)):
+            os.environ[key] = str(value)
+
+
+load_streamlit_secrets_into_env()
 TABLE_BACKGROUND = "#f9fafb80"
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 LOGO_DIR = db.APP_DIR / "assets" / "logos"
