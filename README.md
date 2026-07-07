@@ -47,6 +47,8 @@ For the online Streamlit + Neon deployment checklist, see `DEPLOYMENT.md`.
 
 By default the app uses local SQLite at `data/price_history.sqlite`. If `DATABASE_URL` is set in `.env`, GitHub Actions secrets, or Streamlit secrets, the same `db.py` interface uses Postgres instead. This lets the local app, online Streamlit app, and scheduled GitHub Actions updates read and write the same shared history.
 
+Set `APP_PASSWORD` in Streamlit secrets to require a password before the online app UI is shown.
+
 One-time migration from local SQLite to Postgres:
 
 ```powershell

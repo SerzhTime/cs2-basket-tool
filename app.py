@@ -129,8 +129,28 @@ def clear_data_cache() -> None:
     st.cache_data.clear()
 
 
+def require_app_password() -> bool:
+    password = os.getenv("APP_PASSWORD", "").strip()
+    if not password:
+        return True
+    if st.session_state.get("app_authenticated"):
+        return True
+
+    st.title("CS2 Basket Price Comparison")
+    st.caption("Enter the app password to continue.")
+    entered = st.text_input("Password", type="password")
+    if st.button("Unlock", type="primary"):
+        if entered == password:
+            st.session_state.app_authenticated = True
+            st.rerun()
+        st.error("Incorrect password.")
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title="CS2 Basket Price Comparison", layout="wide")
+    if not require_app_password():
+        return
     st.markdown(
         """
         <style>

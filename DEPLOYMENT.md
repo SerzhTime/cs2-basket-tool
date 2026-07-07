@@ -33,11 +33,14 @@ Important: paste actual values only in Streamlit Cloud secrets. Do not commit `.
 
 At minimum, the online app needs:
 
+- `APP_PASSWORD`
 - `DATABASE_URL`
 - `HALOSKINS_LOWEST_PRICE_URL`
 - API keys for every API-backed market you want enabled online.
 
 Use the same values you already added to GitHub Actions secrets.
+
+`APP_PASSWORD` protects the Streamlit page itself. If it is unset, the app opens normally.
 
 ## Scheduled Updates
 
@@ -65,4 +68,3 @@ Before enabling schedule:
 2. Confirm a new snapshot appears in Neon/history graph.
 3. Check obvious outliers in the table.
 4. Only then enable the cron schedule.
-
