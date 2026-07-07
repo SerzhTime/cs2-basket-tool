@@ -25,6 +25,7 @@ Local-only CS2 skin basket price comparison app. HaloSkins is the baseline marke
 - SteamAnalyst lower-priority backup for selected missing marketplace prices
 - Generic webpage adapter scaffold for price-compare pages without APIs
 - Cloud IP probe script and GitHub Actions workflow for checking online deployment compatibility before moving the full app
+- Optional mixed local/cloud mode through `DATABASE_URL` and Neon/Postgres
 
 ## Setup
 
@@ -39,6 +40,24 @@ Copy-Item .env.example .env
 Open the local URL shown by Streamlit, usually `http://localhost:8501`.
 
 To test whether APIs and marketplace pages tolerate cloud/datacenter IPs before deployment, see `CLOUD_PROBE.md`.
+
+## Mixed local/cloud database mode
+
+By default the app uses local SQLite at `data/price_history.sqlite`. If `DATABASE_URL` is set in `.env`, GitHub Actions secrets, or Streamlit secrets, the same `db.py` interface uses Postgres instead. This lets the local app, online Streamlit app, and scheduled GitHub Actions updates read and write the same shared history.
+
+One-time migration from local SQLite to Postgres:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\migrate_sqlite_to_postgres.py
+```
+
+Manual cloud-compatible scheduled update entry point:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\scheduled_update.py
+```
+
+The GitHub workflow `.github/workflows/scheduled-price-update.yml` is manual by default. Enable its commented `schedule` block only after a manual run writes a good snapshot.
 
 ## Data files
 
