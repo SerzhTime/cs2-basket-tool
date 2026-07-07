@@ -79,9 +79,17 @@ def cached_latest_snapshot() -> dict | None:
     return dict(row) if row else None
 
 
+@st.cache_resource(show_spinner=False)
+def initialize_database() -> bool:
+    db.init_db()
+    return True
+
+
 @st.cache_data(ttl=45, show_spinner=False)
-def cached_latest_price_points() -> list[dict]:
-    return [dict(row) for row in db.latest_price_points()]
+def cached_latest_price_points(snapshot_id: int | None) -> list[dict]:
+    if snapshot_id is None:
+        return []
+    return [dict(row) for row in db.price_points_for_snapshot(snapshot_id)]
 
 
 @st.cache_data(ttl=45, show_spinner=False)
@@ -467,7 +475,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    db.init_db()
+    initialize_database()
     if not st.session_state.get("basket_file_synced"):
         sync_basket_file()
         st.session_state.basket_file_synced = True
@@ -502,22 +510,26 @@ def main() -> None:
     if "update_error" in st.session_state:
         st.error(st.session_state.pop("update_error"))
 
-    tabs = st.tabs(
+    page = st.segmented_control(
+        "Page",
         [
             "Current Basket Comparison",
             "Historical Graph",
             "Basket Items",
             "Settings / Marketplaces",
-        ]
+        ],
+        default="Current Basket Comparison",
+        key="active_page",
+        label_visibility="collapsed",
     )
 
-    with tabs[0]:
+    if page == "Current Basket Comparison":
         render_current_comparison()
-    with tabs[1]:
+    elif page == "Historical Graph":
         render_history()
-    with tabs[2]:
+    elif page == "Basket Items":
         render_basket_items()
-    with tabs[3]:
+    elif page == "Settings / Marketplaces":
         render_marketplace_settings()
 
 
@@ -557,7 +569,7 @@ def render_current_comparison() -> None:
         return
 
     items = cached_basket_items(active_only=False)
-    points = cached_latest_price_points()
+    points = cached_latest_price_points(int(snapshot["snapshot_id"]))
     marketplace_order = enabled_marketplace_names()
     comparison, _ = build_comparison_table(items, points, marketplace_order)
     market_options = [name for name in marketplace_order if name != BASELINE_MARKETPLACE]
@@ -1602,7 +1614,7 @@ def render_item_update_status(items: list[dict]) -> None:
         st.caption("No saved snapshot yet.")
         return
 
-    points = cached_latest_price_points()
+    points = cached_latest_price_points(int(snapshot["snapshot_id"]))
     status_rows = build_item_update_status_rows(items, points, snapshot["timestamp"])
     if not status_rows:
         st.caption("No item status rows are available for the latest snapshot.")
@@ -1805,7 +1817,7 @@ def render_marketplace_coverage() -> None:
         return
 
     items = cached_basket_items(active_only=False)
-    points = cached_latest_price_points()
+    points = cached_latest_price_points(int(snapshot["snapshot_id"]))
     _, coverage = build_comparison_table(items, points, enabled_marketplace_names())
     st.dataframe(
         format_simple_table(coverage, {"Total cost": lambda value: "N/A" if pd.isna(value) else f"${value:,.2f}"}),

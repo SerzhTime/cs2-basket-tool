@@ -602,6 +602,10 @@ def latest_price_points() -> list[sqlite3.Row]:
     snapshot = latest_snapshot()
     if snapshot is None:
         return []
+    return price_points_for_snapshot(int(snapshot["snapshot_id"]))
+
+
+def price_points_for_snapshot(snapshot_id: int) -> list[sqlite3.Row]:
     with connect() as con:
         return list(
             con.execute(
@@ -612,7 +616,7 @@ def latest_price_points() -> list[sqlite3.Row]:
                 WHERE pp.snapshot_id = ?
                 ORDER BY pp.marketplace, pp.market_hash_name
                 """,
-                (snapshot["snapshot_id"],),
+                (snapshot_id,),
             ).fetchall()
         )
 
