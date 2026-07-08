@@ -538,7 +538,12 @@ def main() -> None:
     with meta_cols[0]:
         render_last_updated_meta()
     with meta_cols[1]:
-        render_update_status("Fetching enabled marketplace adapters..." if update_clicked else None)
+        header_status = None
+        if sync_clicked:
+            header_status = "Synchronizing local SQLite and Neon..."
+        elif update_clicked:
+            header_status = "Fetching enabled marketplace adapters..."
+        render_update_status(header_status)
     if sync_clicked:
         try:
             if db.using_postgres():
