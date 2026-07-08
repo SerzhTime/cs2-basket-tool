@@ -9,7 +9,6 @@ from .base import BasketItem, PriceResult
 
 
 OPEN_SKIN_MARKETS = {
-    "openskin_skinport": ("Skinport", "skinport"),
     "openskin_buff163": ("Buff163", "buff"),
     "openskin_youpin": ("YouPin", "youpin"),
     "openskin_steam": ("Steam", "steam"),
