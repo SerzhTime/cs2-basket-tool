@@ -56,9 +56,10 @@ The app will show new snapshots from Neon automatically. If the app page is alre
 
 ## Local and Online Sync
 
-- Online update -> writes to Neon -> local app sees it because local `.env` has `DATABASE_URL`.
-- Local update -> writes to Neon -> online app sees it after refresh/cache expiry.
-- If `DATABASE_URL` is removed locally, local app falls back to SQLite and will no longer sync with online data.
+- Online update -> writes to Neon -> local app sees it immediately only if local `.env` uses Postgres mode.
+- Local update in SQLite mode -> writes to local SQLite -> online app sees it after you click `Sync Neon` and refresh/cache expires.
+- If local `.env` has `DATABASE_BACKEND=sqlite`, the local app is fast and local-first. `Sync Neon` pushes local snapshots to Neon, then pulls Neon-only snapshots back into local SQLite.
+- Sync matches snapshots by timestamp. If the same timestamp exists locally and in Neon, local SQLite is treated as the source of truth.
 
 ## Safety Checks
 

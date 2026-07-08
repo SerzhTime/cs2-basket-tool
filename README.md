@@ -49,6 +49,10 @@ By default the app uses local SQLite at `data/price_history.sqlite`. If `DATABAS
 
 Set `APP_PASSWORD` in Streamlit secrets to require a password before the online app UI is shown.
 
+For faster local-only work, set `DATABASE_BACKEND=sqlite` in `.env`. This ignores `DATABASE_URL` locally and uses `data/price_history.sqlite`; remove it or set `DATABASE_BACKEND=postgres` when you want the local app to read/write shared Neon data again.
+
+When local SQLite mode is active and `DATABASE_URL` is still configured, the app shows a `Sync Neon` button. It first pushes local SQLite basket/settings/snapshots to Neon, then pulls any Neon snapshots that do not already exist locally. Sync matches snapshots by timestamp instead of local id to avoid local/Neon id collisions. If both sides have the same timestamp, local SQLite wins. Online Streamlit cannot directly read your laptop database; local changes reach online only after this sync.
+
 One-time migration from local SQLite to Postgres:
 
 ```powershell

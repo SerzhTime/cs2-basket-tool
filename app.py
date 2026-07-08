@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 import db
 from adapters import PriceResult, build_adapter_registry
 from adapters.backup_sources import apply_backup_prices, clear_backup_cache
-from adapters.csgoskins import CSGOSKINS_MARKETS
+from adapters.csgoskins import CSGOSKINS_MARKETS, clear_csgoskins_cache
 from adapters.direct_market_pages import fetch_direct_market_page_price
 from basket import load_basket_rows
 from calculations import (
@@ -206,7 +206,7 @@ def main() -> None:
             white-space: nowrap;
         }
         .header-button-spacer {
-            height: 1.25rem;
+            height: 2.0rem;
         }
         .kpi-grid {
             display: grid;
@@ -519,18 +519,42 @@ def main() -> None:
         st.session_state.basket_file_synced = True
         clear_data_cache()
 
-    title_cols = st.columns([5, 1.15], vertical_alignment="top")
+    title_cols = st.columns([7.2, 0.72, 0.82], vertical_alignment="top")
     with title_cols[0]:
         st.title("CS2 Basket Price Comparison")
     with title_cols[1]:
         st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
+        sync_clicked = st.button(
+            "Sync Neon",
+            use_container_width=True,
+            disabled=not db.postgres_database_url(),
+            help="Two-way sync between local SQLite and Neon. Local data wins if a timestamp exists in both places.",
+        )
+    with title_cols[2]:
+        st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
         update_clicked = st.button("Update prices", type="primary", use_container_width=True)
 
-    meta_cols = st.columns([5, 1.15], vertical_alignment="top")
+    meta_cols = st.columns([7.2, 0.72, 0.82], vertical_alignment="top")
     with meta_cols[0]:
         render_last_updated_meta()
     with meta_cols[1]:
         render_update_status("Fetching enabled marketplace adapters..." if update_clicked else None)
+    if sync_clicked:
+        try:
+            if db.using_postgres():
+                st.session_state.sync_notice = "Already using Neon/Postgres. Nothing to sync from local SQLite."
+            else:
+                counts = db.sync_sqlite_to_postgres()
+                st.session_state.sync_notice = (
+                    "Synced local SQLite and Neon: "
+                    f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points, "
+                    f"pulled {counts['pulled_snapshots']} snapshots / {counts['pulled_price_points']} price points."
+                )
+        except Exception as exc:
+            st.session_state.sync_error = str(exc)
+        else:
+            clear_data_cache()
+        st.rerun()
     if update_clicked:
         try:
             snapshot_id, timestamp, success_rate = collect_snapshot()
@@ -547,6 +571,10 @@ def main() -> None:
         st.toast(st.session_state.pop("update_notice"))
     if "update_error" in st.session_state:
         st.error(st.session_state.pop("update_error"))
+    if "sync_notice" in st.session_state:
+        st.success(st.session_state.pop("sync_notice"))
+    if "sync_error" in st.session_state:
+        st.error(st.session_state.pop("sync_error"))
 
     page = st.segmented_control(
         "Page",
@@ -834,6 +862,7 @@ def repair_missing_market_prices(marketplaces: list[str]) -> list[str]:
         if result.fetch_status == "ok" and result.price is not None
     }
     clear_backup_cache()
+    clear_csgoskins_cache()
 
     result_lines: list[str] = []
     for marketplace in marketplaces:
@@ -863,12 +892,25 @@ def repair_missing_market_prices(marketplaces: list[str]) -> list[str]:
                     if result.marketplace == marketplace
                 ]
         else:
-            candidate_results = fetch_repair_with_direct_pages(
-                marketplace,
+            csgoskins_retry_names = {
+                item.market_hash_name
+                for item in missing_items
+                if should_retry_csgoskins_first(
+                    points_by_market_item.get((marketplace, item.market_hash_name))
+                )
+            }
+            candidate_results = fetch_repair_with_api(
                 adapter,
-                missing_items,
-                baseline_results,
-                baseline_prices,
+                [item for item in missing_items if item.market_hash_name in csgoskins_retry_names],
+            )
+            candidate_results.extend(
+                fetch_repair_with_direct_pages(
+                    marketplace,
+                    adapter,
+                    [item for item in missing_items if item.market_hash_name not in csgoskins_retry_names],
+                    baseline_results,
+                    baseline_prices,
+                )
             )
 
         updated = db.update_latest_missing_price_points(marketplace, candidate_results)
@@ -944,6 +986,13 @@ def price_point_missing(point) -> bool:
     if point is None:
         return True
     return point["fetch_status"] != "ok" or point["normalized_price"] is None
+
+
+def should_retry_csgoskins_first(point) -> bool:
+    if point is None:
+        return False
+    error = (point["error_details"] or "").lower()
+    return "csgoskins" in error or "r.jina.ai" in error
 
 
 def existing_baseline_results(points, item_by_name: dict[str, object]) -> list[PriceResult]:
@@ -1421,6 +1470,7 @@ class SnapshotQualityError(RuntimeError):
 def collect_snapshot() -> tuple[int, str, float]:
     registry = build_adapter_registry()
     clear_backup_cache()
+    clear_csgoskins_cache()
     enabled_keys = db.get_enabled_adapter_keys()
     items = db.get_adapter_items()
     all_results: list[PriceResult] = []
@@ -1461,8 +1511,42 @@ def collect_snapshot() -> tuple[int, str, float]:
             f"({success_rate:.0%}) were received. Previous successful data is still displayed."
         )
 
-    snapshot_id, timestamp = db.save_snapshot_results(all_results)
+    recordable_results, skipped_marketplaces = filter_recordable_marketplaces(all_results, len(items))
+    if not recordable_results:
+        raise SnapshotQualityError(
+            "Update aborted: every marketplace had too many missing/error rows. "
+            "Previous successful data is still displayed."
+        )
+
+    snapshot_id, timestamp = db.save_snapshot_results(recordable_results)
     return snapshot_id, timestamp, success_rate
+
+
+def filter_recordable_marketplaces(
+    results: list[PriceResult],
+    item_count: int,
+) -> tuple[list[PriceResult], list[str]]:
+    if item_count <= 0:
+        return results, []
+
+    grouped: dict[str, list[PriceResult]] = {}
+    for result in results:
+        grouped.setdefault(result.marketplace, []).append(result)
+
+    kept: list[PriceResult] = []
+    skipped: list[str] = []
+    for marketplace, marketplace_results in grouped.items():
+        failed_count = sum(
+            1
+            for result in marketplace_results
+            if result.fetch_status != "ok" or db.normalize_to_usd(result.price, result.currency) is None
+        )
+        failure_rate = failed_count / max(item_count, len(marketplace_results), 1)
+        if marketplace != BASELINE_MARKETPLACE and failure_rate >= db.MAX_MARKETPLACE_FAILURE_RATE:
+            skipped.append(marketplace)
+            continue
+        kept.extend(marketplace_results)
+    return kept, skipped
 
 
 def render_fetch_status() -> None:

@@ -196,7 +196,10 @@ def _fetch_no_offer_fallback(url: str, response: requests.Response) -> requests.
 def _fetch_page(url: str) -> requests.Response:
     mode = os.getenv("CSGOSKINS_FETCH_MODE", "auto").strip().lower()
     if mode == "reader":
-        return _get(_reader_url(url))
+        try:
+            return _get(_reader_url(url))
+        except requests.RequestException:
+            return _get(url)
     if mode == "direct":
         return _get(url)
 
