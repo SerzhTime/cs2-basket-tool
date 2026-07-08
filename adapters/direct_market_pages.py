@@ -56,7 +56,7 @@ def fetch_direct_market_page_price(
                 errors.append(f"{url}: {exc}")
                 continue
 
-            price = _lowest_plausible_price(response.text, baseline_price)
+            price, stock_count = _direct_page_price(marketplace, response.text, baseline_price)
             if price is None:
                 loaded_without_price.append(response.url)
                 continue
@@ -67,7 +67,7 @@ def fetch_direct_market_page_price(
                     market_hash_name=item.market_hash_name,
                     price=price,
                     currency="USD",
-                    stock_count=1,
+                    stock_count=stock_count,
                     fetch_status="ok",
                     error_details=f"Direct {marketplace} page repair from item URL.",
                 )
@@ -118,7 +118,17 @@ def _candidate_urls(marketplace: str, item: BasketItem) -> list[str]:
     return [url for url in candidates if url and not (url in seen or seen.add(url))]
 
 
-def _lowest_plausible_price(html: str, baseline_price: float | None) -> float | None:
+def _direct_page_price(
+    marketplace: str,
+    html: str,
+    baseline_price: float | None,
+) -> tuple[float | None, int | None]:
+    if marketplace == "Exeskins":
+        return _exeskins_direct_price(html, baseline_price)
+    return _generic_direct_price(html, baseline_price)
+
+
+def _generic_direct_price(html: str, baseline_price: float | None) -> tuple[float | None, int | None]:
     candidates = sorted(
         {
             float(match.group("price").replace(",", ""))
@@ -127,16 +137,41 @@ def _lowest_plausible_price(html: str, baseline_price: float | None) -> float | 
     )
     candidates = [price for price in candidates if price > 0]
     if baseline_price is None or baseline_price <= 0:
-        return candidates[0] if len(candidates) == 1 else None
+        return (candidates[0], 1) if len(candidates) == 1 else (None, None)
 
+    plausible = _baseline_plausible_prices(candidates, baseline_price)
+    return (plausible[0], 1) if plausible else (None, None)
+
+
+def _exeskins_direct_price(html: str, baseline_price: float | None) -> tuple[float | None, int | None]:
+    # Exeskins is a Next.js app. Generic "$number" scanning catches style/router
+    # internals, so only trust escaped sale asset fields from the page payload.
+    candidates = sorted(
+        {
+            float(match.group("price"))
+            for match in re.finditer(
+                r'\\?"inventoryStatus\\?":\\?"on_sale\\?".{0,240}?\\?"salePrice\\?":(?P<price>[0-9]+(?:\.[0-9]+)?)',
+                html[: int(os.getenv("DIRECT_MARKET_PAGE_MAX_CHARS", "900000"))],
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        }
+    )
+    candidates = [price for price in candidates if price > 0]
+    if baseline_price is None or baseline_price <= 0:
+        return (candidates[0], len(candidates)) if candidates else (None, None)
+
+    plausible = _baseline_plausible_prices(candidates, baseline_price)
+    return (plausible[0], len(plausible)) if plausible else (None, None)
+
+
+def _baseline_plausible_prices(candidates: list[float], baseline_price: float) -> list[float]:
     min_ratio = float(os.getenv("DIRECT_MARKET_MIN_BASELINE_RATIO", "0.5"))
     max_ratio = float(os.getenv("DIRECT_MARKET_MAX_BASELINE_RATIO", "2.0"))
-    plausible = [
+    return [
         price
         for price in candidates
         if min_ratio <= (price / baseline_price) <= max_ratio
     ]
-    return plausible[0] if plausible else None
 
 
 def _session() -> requests.Session:

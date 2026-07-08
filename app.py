@@ -1010,15 +1010,19 @@ def repair_missing_market_prices(marketplaces: list[str]) -> list[str]:
                 adapter,
                 [item for item in missing_items if item.market_hash_name in csgoskins_retry_names],
             )
-            candidate_results.extend(
-                fetch_repair_with_direct_pages(
-                    marketplace,
-                    adapter,
-                    [item for item in missing_items if item.market_hash_name not in csgoskins_retry_names],
-                    baseline_results,
-                    baseline_prices,
+            direct_repair_items = [
+                item for item in missing_items if item.market_hash_name not in csgoskins_retry_names
+            ]
+            if direct_repair_items:
+                candidate_results.extend(
+                    fetch_repair_with_direct_pages(
+                        marketplace,
+                        adapter,
+                        direct_repair_items,
+                        baseline_results,
+                        baseline_prices,
+                    )
                 )
-            )
 
         updated = db.update_latest_missing_price_points(marketplace, candidate_results)
         result_lines.append(f"{marketplace}: updated {updated}, not updated {len(missing_items) - updated}")
@@ -1643,13 +1647,18 @@ def filter_recordable_marketplaces(
     kept: list[PriceResult] = []
     skipped: list[str] = []
     for marketplace, marketplace_results in grouped.items():
-        failed_count = sum(
+        ok_count = sum(
             1
             for result in marketplace_results
-            if result.fetch_status != "ok" or db.normalize_to_usd(result.price, result.currency) is None
+            if result.fetch_status == "ok" and db.normalize_to_usd(result.price, result.currency) is not None
         )
-        failure_rate = failed_count / max(item_count, len(marketplace_results), 1)
-        if marketplace != BASELINE_MARKETPLACE and failure_rate >= db.MAX_MARKETPLACE_FAILURE_RATE:
+        error_count = sum(1 for result in marketplace_results if result.fetch_status == "error")
+        error_rate = error_count / max(item_count, len(marketplace_results), 1)
+        if (
+            marketplace != BASELINE_MARKETPLACE
+            and ok_count == 0
+            and error_rate >= db.MAX_MARKETPLACE_FAILURE_RATE
+        ):
             skipped.append(marketplace)
             continue
         kept.extend(marketplace_results)
