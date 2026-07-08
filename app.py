@@ -128,6 +128,8 @@ def cached_history_totals(since_iso: str | None = None) -> list[dict]:
 
 @st.cache_data(ttl=45, show_spinner=False)
 def cached_update_runs() -> list[dict]:
+    if not hasattr(db, "update_runs"):
+        return []
     return [dict(row) for row in db.update_runs()]
 
 
@@ -524,6 +526,7 @@ def main() -> None:
         sync_basket_file()
         st.session_state.basket_file_synced = True
         clear_data_cache()
+    run_startup_and_due_sync()
 
     title_cols = st.columns([7.2, 0.72, 0.82], vertical_alignment="top")
     with title_cols[0]:
@@ -533,8 +536,11 @@ def main() -> None:
         sync_clicked = st.button(
             "Sync Neon",
             use_container_width=True,
-            disabled=not db.postgres_database_url(),
-            help="Two-way sync between local SQLite and Neon. Local data wins if a timestamp exists in both places.",
+            disabled=not local_neon_sync_available(),
+            help=(
+                "Two-way sync between local SQLite and Neon. "
+                "Available only in local SQLite mode with DATABASE_URL configured."
+            ),
         )
     with title_cols[2]:
         st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
@@ -551,20 +557,7 @@ def main() -> None:
             header_status = "Fetching enabled marketplace adapters..."
         render_update_status(header_status)
     if sync_clicked:
-        try:
-            if db.using_postgres():
-                st.session_state.sync_notice = "Already using Neon/Postgres. Nothing to sync from local SQLite."
-            else:
-                counts = db.sync_sqlite_to_postgres()
-                st.session_state.sync_notice = (
-                    "Synced local SQLite and Neon: "
-                    f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points, "
-                    f"pulled {counts['pulled_snapshots']} snapshots / {counts['pulled_price_points']} price points."
-                )
-        except Exception as exc:
-            st.session_state.sync_error = str(exc)
-        else:
-            clear_data_cache()
+        perform_neon_sync("manual")
         st.rerun()
     if update_clicked:
         started_at = db.utc_now_iso()
@@ -605,6 +598,7 @@ def main() -> None:
                 f"Saved snapshot #{snapshot_id} at {format_timestamp_utc8(timestamp)} "
                 f"({success_rate:.0%} data received)."
             )
+            schedule_delayed_neon_sync()
             clear_data_cache()
         st.rerun()
     if "update_notice" in st.session_state:
@@ -615,6 +609,7 @@ def main() -> None:
         st.success(st.session_state.pop("sync_notice"))
     if "sync_error" in st.session_state:
         st.error(st.session_state.pop("sync_error"))
+    render_pending_neon_sync_timer()
 
     page = st.segmented_control(
         "Page",
@@ -643,6 +638,78 @@ def sync_basket_file() -> None:
     if db.BASKET_PATH.exists():
         rows = load_basket_rows(db.BASKET_PATH)
         db.insert_basket_items(rows)
+
+
+def local_neon_sync_available() -> bool:
+    return bool(db.postgres_database_url()) and not db.using_postgres()
+
+
+def run_startup_and_due_sync() -> None:
+    if not local_neon_sync_available():
+        return
+
+    if not st.session_state.get("startup_neon_sync_done"):
+        st.session_state.startup_neon_sync_done = True
+        perform_neon_sync("startup")
+        st.rerun()
+
+    due_at = st.session_state.get("pending_neon_sync_at")
+    if due_at and time.time() >= float(due_at):
+        st.session_state.pop("pending_neon_sync_at", None)
+        perform_neon_sync("delayed")
+        st.rerun()
+
+
+def perform_neon_sync(trigger: str) -> None:
+    if db.using_postgres():
+        st.session_state.sync_notice = "Online app already uses Neon directly. No local SQLite sync is needed."
+        return
+    if not db.postgres_database_url():
+        st.session_state.sync_error = "DATABASE_URL is not configured, so Neon sync cannot run."
+        return
+
+    try:
+        counts = db.sync_sqlite_to_postgres()
+    except Exception as exc:
+        st.session_state.sync_error = str(exc)
+        return
+
+    st.session_state.sync_notice = (
+        f"{sync_trigger_label(trigger)} sync completed: "
+        f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points, "
+        f"pulled {counts['pulled_snapshots']} snapshots / {counts['pulled_price_points']} price points."
+    )
+    clear_data_cache()
+
+
+def sync_trigger_label(trigger: str) -> str:
+    if trigger == "startup":
+        return "Startup Neon"
+    if trigger == "delayed":
+        return "Post-update Neon"
+    return "Neon"
+
+
+def schedule_delayed_neon_sync() -> None:
+    if local_neon_sync_available():
+        st.session_state.pending_neon_sync_at = time.time() + 15 * 60
+
+
+def render_pending_neon_sync_timer() -> None:
+    due_at = st.session_state.get("pending_neon_sync_at")
+    if not due_at or not local_neon_sync_available():
+        return
+    delay_ms = max(1000, int((float(due_at) - time.time()) * 1000))
+    components.html(
+        f"""
+        <script>
+        window.setTimeout(() => {{
+            window.parent.location.reload();
+        }}, {delay_ms});
+        </script>
+        """,
+        height=0,
+    )
 
 
 def render_last_updated_meta(status: str | None = None) -> None:
@@ -1705,6 +1772,9 @@ def format_history_table(chart_df: pd.DataFrame) -> pd.DataFrame:
 
 def render_update_runs_table() -> None:
     st.subheader("Update Run Log")
+    if not hasattr(db, "update_runs"):
+        st.caption("Update run logging is not available until the matching database module is deployed.")
+        return
     rows = cached_update_runs()
     if not rows:
         st.caption("No manual or automatic update runs recorded yet.")
