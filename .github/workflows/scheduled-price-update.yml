@@ -2,9 +2,8 @@ name: Scheduled Price Update
 
 on:
   workflow_dispatch:
-  # Enable after verifying a manual run.
-  # schedule:
-  #   - cron: "23 */6 * * *"
+  schedule:
+    - cron: "23 */3 * * *"
 
 jobs:
   update:

@@ -6,6 +6,7 @@ from html import escape
 import json
 import os
 import re
+import time
 
 import pandas as pd
 import plotly.express as px
@@ -123,6 +124,11 @@ def cached_marketplaces() -> list[dict]:
 @st.cache_data(ttl=45, show_spinner=False)
 def cached_history_totals(since_iso: str | None = None) -> list[dict]:
     return [dict(row) for row in db.history_totals(since_iso=since_iso)]
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_update_runs() -> list[dict]:
+    return [dict(row) for row in db.update_runs()]
 
 
 def clear_data_cache() -> None:
@@ -561,11 +567,40 @@ def main() -> None:
             clear_data_cache()
         st.rerun()
     if update_clicked:
+        started_at = db.utc_now_iso()
+        started_timer = time.perf_counter()
         try:
             snapshot_id, timestamp, success_rate = collect_snapshot()
         except SnapshotQualityError as exc:
+            db.record_update_run(
+                source="manual",
+                started_at=started_at,
+                finished_at=db.utc_now_iso(),
+                duration_seconds=time.perf_counter() - started_timer,
+                status="error",
+                error_details=str(exc),
+            )
             st.session_state.update_error = str(exc)
+        except Exception as exc:
+            db.record_update_run(
+                source="manual",
+                started_at=started_at,
+                finished_at=db.utc_now_iso(),
+                duration_seconds=time.perf_counter() - started_timer,
+                status="error",
+                error_details=str(exc),
+            )
+            raise
         else:
+            db.record_update_run(
+                source="manual",
+                started_at=started_at,
+                finished_at=db.utc_now_iso(),
+                duration_seconds=time.perf_counter() - started_timer,
+                status="ok",
+                snapshot_id=snapshot_id,
+                success_rate=success_rate,
+            )
             st.session_state.update_notice = (
                 f"Saved snapshot #{snapshot_id} at {format_timestamp_utc8(timestamp)} "
                 f"({success_rate:.0%} data received)."
@@ -1575,6 +1610,7 @@ def render_history() -> None:
     rows = cached_history_totals(since_iso=since)
     if not rows:
         st.info("No historical snapshots match this time range.")
+        render_update_runs_table()
         return
 
     hist = pd.DataFrame([dict(row) for row in rows])
@@ -1583,6 +1619,7 @@ def render_history() -> None:
     hist = hist[hist["marketplace"].isin(enabled)]
     if hist.empty:
         st.info("No enabled marketplaces have historical snapshots in this time range.")
+        render_update_runs_table()
         return
     marketplaces = sorted(hist["marketplace"].unique().tolist())
     default_marketplaces = default_history_marketplaces(hist, marketplaces)
@@ -1595,6 +1632,7 @@ def render_history() -> None:
     render_marketplace_tag_logo_decorator(marketplaces)
     if not selected:
         st.info("Select at least one marketplace.")
+        render_update_runs_table()
         return
 
     chart_df = hist[hist["marketplace"].isin(selected)]
@@ -1629,6 +1667,7 @@ def render_history() -> None:
         use_container_width=True,
         hide_index=True,
     )
+    render_update_runs_table()
 
 
 def default_history_marketplaces(hist: pd.DataFrame, marketplaces: list[str]) -> list[str]:
@@ -1662,6 +1701,56 @@ def format_history_table(chart_df: pd.DataFrame) -> pd.DataFrame:
     table_df = table_df.rename(columns={"timestamp_utc8": "timestamp"})
     table_df["timestamp"] = table_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S UTC+8")
     return table_df
+
+
+def render_update_runs_table() -> None:
+    st.subheader("Update Run Log")
+    rows = cached_update_runs()
+    if not rows:
+        st.caption("No manual or automatic update runs recorded yet.")
+        return
+    table_df = pd.DataFrame(rows)
+    table_df["started_at"] = to_utc8_datetime_series(table_df["started_at"]).dt.strftime("%Y-%m-%d %H:%M:%S UTC+8")
+    table_df["finished_at"] = to_utc8_datetime_series(table_df["finished_at"]).dt.strftime("%Y-%m-%d %H:%M:%S UTC+8")
+    table_df["duration"] = table_df["duration_seconds"].map(format_duration_seconds)
+    table_df["success_rate"] = table_df["success_rate"].map(
+        lambda value: "" if pd.isna(value) else f"{float(value):.0%}"
+    )
+    table_df = table_df[
+        [
+            "started_at",
+            "finished_at",
+            "source",
+            "duration",
+            "status",
+            "snapshot_id",
+            "success_rate",
+            "error_details",
+        ]
+    ].rename(
+        columns={
+            "started_at": "started",
+            "finished_at": "finished",
+            "snapshot_id": "snapshot",
+            "success_rate": "data received",
+            "error_details": "error",
+        }
+    )
+    st.dataframe(format_simple_table(table_df), use_container_width=True, hide_index=True)
+
+
+def format_duration_seconds(value: object) -> str:
+    try:
+        seconds = max(0.0, float(value))
+    except (TypeError, ValueError):
+        return ""
+    minutes, rem = divmod(int(round(seconds)), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {rem}s"
+    if minutes:
+        return f"{minutes}m {rem}s"
+    return f"{rem}s"
 
 
 def since_for_range(label: str | None) -> str | None:
