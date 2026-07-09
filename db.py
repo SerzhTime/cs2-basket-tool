@@ -729,10 +729,19 @@ def price_points_for_snapshot(snapshot_id: int) -> list[sqlite3.Row]:
 
 
 def update_latest_missing_price_points(marketplace: str, results: Iterable[PriceResult]) -> int:
+    return update_latest_repair_price_points(marketplace, results)
+
+
+def update_latest_repair_price_points(
+    marketplace: str,
+    results: Iterable[PriceResult],
+    overwrite_market_hash_names: set[str] | None = None,
+) -> int:
     snapshot = latest_snapshot()
     if snapshot is None:
         return 0
 
+    overwrite_market_hash_names = overwrite_market_hash_names or set()
     item_map = {row["market_hash_name"]: int(row["item_id"]) for row in get_basket_items()}
     timestamp = snapshot["timestamp"]
     updated_count = 0
@@ -752,7 +761,13 @@ def update_latest_missing_price_points(marketplace: str, results: Iterable[Price
                 """,
                 (snapshot["snapshot_id"], marketplace, result.market_hash_name),
             ).fetchone()
-            if existing and existing["fetch_status"] == "ok" and existing["normalized_price"] is not None:
+            should_overwrite = result.market_hash_name in overwrite_market_hash_names
+            if (
+                existing
+                and existing["fetch_status"] == "ok"
+                and existing["normalized_price"] is not None
+                and not should_overwrite
+            ):
                 continue
 
             if existing:

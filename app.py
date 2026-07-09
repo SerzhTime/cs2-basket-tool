@@ -90,6 +90,7 @@ API_REPAIR_MARKETPLACES = {
 }
 API_REPAIR_WITH_COMPARE_BACKUP = {"Buff163", "YouPin", "Steam"}
 STEAM_MARKETPLACE = "Steam"
+WRONG_PRICE_DIFF_THRESHOLD = 35.0
 
 
 @st.cache_data(ttl=45, show_spinner=False)
@@ -526,7 +527,7 @@ def main() -> None:
         sync_basket_file()
         st.session_state.basket_file_synced = True
         clear_data_cache()
-    run_startup_and_due_sync()
+    prepare_startup_neon_sync()
 
     title_cols = st.columns([7.2, 0.72, 0.82], vertical_alignment="top")
     with title_cols[0]:
@@ -555,6 +556,8 @@ def main() -> None:
             header_status = "Synchronizing local SQLite and Neon..."
         elif update_clicked:
             header_status = "Fetching enabled marketplace adapters..."
+        elif neon_sync_due():
+            header_status = "Synchronizing local SQLite and Neon..."
         render_update_status(header_status)
     if sync_clicked:
         perform_neon_sync("manual")
@@ -633,6 +636,8 @@ def main() -> None:
     elif page == "Settings / Marketplaces":
         render_marketplace_settings()
 
+    run_due_neon_sync()
+
 
 def sync_basket_file() -> None:
     if db.BASKET_PATH.exists():
@@ -644,20 +649,33 @@ def local_neon_sync_available() -> bool:
     return bool(db.postgres_database_url()) and not db.using_postgres()
 
 
-def run_startup_and_due_sync() -> None:
+def prepare_startup_neon_sync() -> None:
     if not local_neon_sync_available():
         return
 
     if not st.session_state.get("startup_neon_sync_done"):
         st.session_state.startup_neon_sync_done = True
+        st.session_state.pending_startup_neon_sync = True
+
+
+def run_due_neon_sync() -> None:
+    if not local_neon_sync_available():
+        return
+    if st.session_state.pop("pending_startup_neon_sync", False):
         perform_neon_sync("startup")
         st.rerun()
 
     due_at = st.session_state.get("pending_neon_sync_at")
     if due_at and time.time() >= float(due_at):
         st.session_state.pop("pending_neon_sync_at", None)
-        perform_neon_sync("delayed")
+        trigger = st.session_state.pop("pending_neon_sync_trigger", "startup")
+        perform_neon_sync(trigger)
         st.rerun()
+
+
+def neon_sync_due() -> bool:
+    due_at = st.session_state.get("pending_neon_sync_at")
+    return bool(due_at and local_neon_sync_available() and time.time() >= float(due_at))
 
 
 def perform_neon_sync(trigger: str) -> None:
@@ -693,6 +711,7 @@ def sync_trigger_label(trigger: str) -> str:
 def schedule_delayed_neon_sync() -> None:
     if local_neon_sync_available():
         st.session_state.pending_neon_sync_at = time.time() + 15 * 60
+        st.session_state.pending_neon_sync_trigger = "delayed"
 
 
 def render_pending_neon_sync_timer() -> None:
@@ -741,10 +760,13 @@ def render_current_comparison() -> None:
         st.info("Click Update prices to create the first local snapshot.")
         return
 
+    loading_placeholder = st.empty()
+    loading_placeholder.caption("Loading latest comparison data...")
     items = cached_basket_items(active_only=False)
     points = cached_latest_price_points(int(snapshot["snapshot_id"]))
     marketplace_order = enabled_marketplace_names()
     comparison, _ = build_comparison_table(items, points, marketplace_order)
+    loading_placeholder.empty()
     market_options = [name for name in marketplace_order if name != BASELINE_MARKETPLACE]
     selected_markets = st.multiselect(
         "Select Marketplaces",
@@ -892,10 +914,10 @@ def render_manual_market_repair(marketplace_order: list[str]) -> None:
         return
 
     st.markdown('<div style="height: 1.35rem;"></div>', unsafe_allow_html=True)
-    st.markdown("#### Repair Missing Marketplace Prices")
+    st.markdown("#### Repair Missing or Wrong Prices")
     st.caption(
-        "Use this when a marketplace has missing items. It checks only missing rows in the latest snapshot "
-        "and updates that same snapshot timestamp when new prices are found. API markets use only their API; "
+        "Use this when a marketplace has missing items or suspicious non-Steam prices more than 35% away from HaloSkins. "
+        "It updates that same snapshot timestamp when new prices are found. API markets use only their API; "
         "non-API markets try direct item pages first and use third-party backups only when the direct page is unavailable."
     )
     repair_cols = st.columns([3, 1], vertical_alignment="bottom")
@@ -909,7 +931,7 @@ def render_manual_market_repair(marketplace_order: list[str]) -> None:
     render_marketplace_tag_logo_decorator(repair_options)
     with repair_cols[1]:
         repair_clicked = st.button(
-            "Update missing prices",
+            "Update selected prices",
             key="manual_repair_button",
             use_container_width=True,
             disabled=not selected,
@@ -921,7 +943,7 @@ def render_manual_market_repair(marketplace_order: list[str]) -> None:
         st.error(st.session_state.pop("manual_repair_error"))
 
     if repair_clicked:
-        with st.spinner("Checking missing marketplace prices..."):
+        with st.spinner("Checking missing or suspicious marketplace prices..."):
             try:
                 result_lines = repair_missing_market_prices(selected)
             except Exception as exc:
@@ -978,40 +1000,53 @@ def repair_missing_market_prices(marketplaces: list[str]) -> list[str]:
             result_lines.append(f"{marketplace}: updated 0, not updated 0")
             continue
 
-        missing_items = [
+        repair_items = [
             item
             for item in items
-            if price_point_missing(points_by_market_item.get((marketplace, item.market_hash_name)))
+            if price_point_needs_repair(
+                points_by_market_item.get((marketplace, item.market_hash_name)),
+                baseline_prices.get(item.market_hash_name),
+                marketplace,
+            )
         ]
-        if not missing_items:
+        overwrite_names = {
+            item.market_hash_name
+            for item in repair_items
+            if price_point_wrong(
+                points_by_market_item.get((marketplace, item.market_hash_name)),
+                baseline_prices.get(item.market_hash_name),
+                marketplace,
+            )
+        }
+        if not repair_items:
             result_lines.append(f"{marketplace}: updated 0, not updated 0")
             continue
 
         if marketplace in API_REPAIR_MARKETPLACES:
-            candidate_results = fetch_repair_with_api(adapter, missing_items)
+            candidate_results = fetch_repair_with_api(adapter, repair_items)
             if marketplace in API_REPAIR_WITH_COMPARE_BACKUP:
                 candidate_results = [
                     result
                     for result in apply_backup_prices(
                         baseline_results + candidate_results,
-                        missing_items,
+                        repair_items,
                     )
                     if result.marketplace == marketplace
                 ]
         else:
             csgoskins_retry_names = {
                 item.market_hash_name
-                for item in missing_items
+                for item in repair_items
                 if should_retry_csgoskins_first(
                     points_by_market_item.get((marketplace, item.market_hash_name))
                 )
             }
             candidate_results = fetch_repair_with_api(
                 adapter,
-                [item for item in missing_items if item.market_hash_name in csgoskins_retry_names],
+                [item for item in repair_items if item.market_hash_name in csgoskins_retry_names],
             )
             direct_repair_items = [
-                item for item in missing_items if item.market_hash_name not in csgoskins_retry_names
+                item for item in repair_items if item.market_hash_name not in csgoskins_retry_names
             ]
             if direct_repair_items:
                 candidate_results.extend(
@@ -1024,8 +1059,12 @@ def repair_missing_market_prices(marketplaces: list[str]) -> list[str]:
                     )
                 )
 
-        updated = db.update_latest_missing_price_points(marketplace, candidate_results)
-        result_lines.append(f"{marketplace}: updated {updated}, not updated {len(missing_items) - updated}")
+        updated = db.update_latest_repair_price_points(
+            marketplace,
+            candidate_results,
+            overwrite_market_hash_names=overwrite_names,
+        )
+        result_lines.append(f"{marketplace}: updated {updated}, not updated {len(repair_items) - updated}")
 
     return result_lines
 
@@ -1097,6 +1136,21 @@ def price_point_missing(point) -> bool:
     if point is None:
         return True
     return point["fetch_status"] != "ok" or point["normalized_price"] is None
+
+
+def price_point_needs_repair(point, baseline_price: float | None, marketplace: str) -> bool:
+    return price_point_missing(point) or price_point_wrong(point, baseline_price, marketplace)
+
+
+def price_point_wrong(point, baseline_price: float | None, marketplace: str) -> bool:
+    if marketplace in {BASELINE_MARKETPLACE, STEAM_MARKETPLACE}:
+        return False
+    if point is None or baseline_price is None or baseline_price <= 0:
+        return False
+    if point["fetch_status"] != "ok" or point["normalized_price"] is None:
+        return False
+    diff = abs(float(point["normalized_price"]) / baseline_price - 1.0) * 100.0
+    return diff > WRONG_PRICE_DIFF_THRESHOLD
 
 
 def should_retry_csgoskins_first(point) -> bool:
