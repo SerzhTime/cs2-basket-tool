@@ -43,12 +43,22 @@ def postgres_database_url() -> str | None:
 def database_url() -> str | None:
     backend = os.getenv("DATABASE_BACKEND", "").strip().lower()
     if backend in {"sqlite", "local"}:
+        if running_on_streamlit_cloud() and postgres_database_url() and not force_sqlite():
+            return postgres_database_url()
         return None
     return postgres_database_url()
 
 
 def using_postgres() -> bool:
     return bool(database_url())
+
+
+def running_on_streamlit_cloud() -> bool:
+    return APP_DIR.as_posix().startswith("/mount/src/") or bool(os.getenv("STREAMLIT_CLOUD"))
+
+
+def force_sqlite() -> bool:
+    return os.getenv("CS2DT_FORCE_SQLITE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _adapt_sql(sql: str, backend: str | None = None) -> str:
@@ -98,8 +108,10 @@ def connect():
         wrapped = DbConnection(con, "postgres")
     else:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(DB_PATH)
+        con = sqlite3.connect(DB_PATH, timeout=float(os.getenv("SQLITE_TIMEOUT_SECONDS", "30")))
         con.row_factory = sqlite3.Row
+        con.execute(f"PRAGMA busy_timeout = {int(float(os.getenv('SQLITE_TIMEOUT_SECONDS', '30')) * 1000)}")
+        con.execute("PRAGMA journal_mode = WAL")
         wrapped = DbConnection(con, "sqlite")
     try:
         yield wrapped
