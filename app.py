@@ -145,6 +145,31 @@ def cached_comparison_data(snapshot_id: int) -> tuple[pd.DataFrame, pd.DataFrame
 
 
 @st.cache_data(ttl=45, show_spinner=False)
+def cached_display_cache(cache_key: str) -> dict | None:
+    row = db.get_display_cache(cache_key)
+    return dict(row) if row else None
+
+
+def load_comparison_data_with_timing(snapshot_id: int) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    started = time.perf_counter()
+    items = cached_basket_items(active_only=False)
+    record_perf_metric("Current: load basket items", started)
+
+    started = time.perf_counter()
+    points = cached_latest_price_points(snapshot_id)
+    record_perf_metric("Current: load price points", started)
+
+    started = time.perf_counter()
+    marketplace_order = enabled_marketplace_names()
+    record_perf_metric("Current: load marketplace order", started)
+
+    started = time.perf_counter()
+    comparison, coverage = build_comparison_table(items, points, marketplace_order)
+    record_perf_metric("Current: build comparison dataframe", started)
+    return comparison, coverage, marketplace_order
+
+
+@st.cache_data(ttl=45, show_spinner=False)
 def cached_comparison_table_html(
     df: pd.DataFrame,
     column_widths: dict[str, int],
@@ -801,14 +826,14 @@ def render_current_comparison() -> None:
         return
 
     cached_shell = st.empty()
-    display_cache = db.get_display_cache(DEFAULT_COMPARISON_CACHE_KEY)
+    display_cache = cached_display_cache(DEFAULT_COMPARISON_CACHE_KEY)
     if display_cache and int(display_cache["snapshot_id"] or 0) == int(snapshot["snapshot_id"]):
         cached_shell.markdown(display_cache["payload"], unsafe_allow_html=True)
 
     loading_placeholder = st.empty()
     loading_placeholder.caption("Loading latest comparison data...")
     data_started = time.perf_counter()
-    comparison, _, marketplace_order = cached_comparison_data(int(snapshot["snapshot_id"]))
+    comparison, _, marketplace_order = load_comparison_data_with_timing(int(snapshot["snapshot_id"]))
     record_perf_metric("Current: load comparison data", data_started)
     loading_placeholder.empty()
     cached_shell.empty()
