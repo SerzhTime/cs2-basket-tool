@@ -991,11 +991,8 @@ def prewarm_inactive_page_caches() -> None:
     placeholder = st.empty()
     placeholder.caption("Preparing other pages...")
     cached_update_runs()
-    cached_basket_items(active_only=False)
-    cached_marketplaces()
     if not db.using_postgres():
         cached_history_totals(since_iso=since_for_range("week"))
-        cached_latest_price_points(snapshot_id)
     st.session_state.prewarmed_snapshot_id = snapshot_id
     placeholder.empty()
 
