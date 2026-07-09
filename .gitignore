@@ -7,3 +7,5 @@ __pycache__/
 *.pyc
 *.log
 data/price_history.sqlite
+data/price_history.sqlite-shm
+data/price_history.sqlite-wal

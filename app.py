@@ -136,10 +136,20 @@ def cached_update_runs() -> list[dict]:
 
 
 @st.cache_data(ttl=45, show_spinner=False)
+def cached_comparison_inputs(snapshot_id: int) -> tuple[list[dict], list[dict], list[dict]]:
+    if hasattr(db, "comparison_inputs_for_snapshot"):
+        items, points, marketplaces = db.comparison_inputs_for_snapshot(snapshot_id)
+    else:
+        items = db.get_basket_items(active_only=False)
+        points = db.price_points_for_snapshot(snapshot_id)
+        marketplaces = db.get_marketplaces()
+    return [dict(row) for row in items], [dict(row) for row in points], [dict(row) for row in marketplaces]
+
+
+@st.cache_data(ttl=45, show_spinner=False)
 def cached_comparison_data(snapshot_id: int) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    items = cached_basket_items(active_only=False)
-    points = cached_latest_price_points(snapshot_id)
-    marketplace_order = enabled_marketplace_names()
+    items, points, marketplaces = cached_comparison_inputs(snapshot_id)
+    marketplace_order = enabled_marketplace_names_from_rows(marketplaces)
     comparison, coverage = build_comparison_table(items, points, marketplace_order)
     return comparison, coverage, marketplace_order
 
@@ -152,16 +162,9 @@ def cached_display_cache(cache_key: str) -> dict | None:
 
 def load_comparison_data_with_timing(snapshot_id: int) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     started = time.perf_counter()
-    items = cached_basket_items(active_only=False)
-    record_perf_metric("Current: load basket items", started)
-
-    started = time.perf_counter()
-    points = cached_latest_price_points(snapshot_id)
-    record_perf_metric("Current: load price points", started)
-
-    started = time.perf_counter()
-    marketplace_order = enabled_marketplace_names()
-    record_perf_metric("Current: load marketplace order", started)
+    items, points, marketplaces = cached_comparison_inputs(snapshot_id)
+    record_perf_metric("Current: load comparison inputs", started)
+    marketplace_order = enabled_marketplace_names_from_rows(marketplaces)
 
     started = time.perf_counter()
     comparison, coverage = build_comparison_table(items, points, marketplace_order)
@@ -2298,6 +2301,10 @@ def render_marketplace_coverage() -> None:
 
 def enabled_marketplace_names() -> list[str]:
     rows = cached_marketplaces()
+    return enabled_marketplace_names_from_rows(rows)
+
+
+def enabled_marketplace_names_from_rows(rows: list[dict]) -> list[str]:
     names = [row["name"] for row in rows if row["enabled"] or row["is_baseline"]]
     if BASELINE_MARKETPLACE in names:
         names = [BASELINE_MARKETPLACE] + [name for name in names if name != BASELINE_MARKETPLACE]

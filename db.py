@@ -523,6 +523,44 @@ def get_marketplaces() -> list[sqlite3.Row]:
         )
 
 
+def comparison_inputs_for_snapshot(snapshot_id: int) -> tuple[list[sqlite3.Row], list[sqlite3.Row], list[sqlite3.Row]]:
+    marketplace_order = (
+        "is_baseline DESC, LOWER(name)" if using_postgres() else "is_baseline DESC, name COLLATE NOCASE"
+    )
+    with connect() as con:
+        items = list(
+            con.execute(
+                """
+                SELECT *
+                FROM basket_items
+                ORDER BY COALESCE(source_rank, item_id), item_id
+                """
+            ).fetchall()
+        )
+        points = list(
+            con.execute(
+                """
+                SELECT pp.*, bi.active, bi.multiplier
+                FROM price_points pp
+                LEFT JOIN basket_items bi ON bi.item_id = pp.item_id
+                WHERE pp.snapshot_id = ?
+                ORDER BY pp.marketplace, pp.market_hash_name
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        )
+        marketplaces = list(
+            con.execute(
+                f"""
+                SELECT *
+                FROM marketplaces
+                ORDER BY {marketplace_order}
+                """
+            ).fetchall()
+        )
+    return items, points, marketplaces
+
+
 def get_enabled_adapter_keys() -> list[str]:
     order = "is_baseline DESC, LOWER(name)" if using_postgres() else "is_baseline DESC, name COLLATE NOCASE"
     with connect() as con:
