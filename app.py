@@ -193,15 +193,19 @@ def clear_data_cache() -> None:
 
 
 def record_perf_metric(label: str, started_at: float) -> None:
+    record_perf_duration(label, (time.perf_counter() - started_at) * 1000)
+
+
+def record_perf_duration(label: str, duration_ms: float) -> None:
     metrics = st.session_state.setdefault("performance_metrics", [])
     metrics.append(
         {
             "step": label,
-            "duration_ms": round((time.perf_counter() - started_at) * 1000, 1),
+            "duration_ms": round(duration_ms, 1),
             "at": datetime.now(UTC_PLUS_8).strftime("%H:%M:%S"),
         }
     )
-    del metrics[:-12]
+    del metrics[:-18]
 
 
 def require_app_password() -> bool:
@@ -216,7 +220,9 @@ def require_app_password() -> bool:
     entered = st.text_input("Password", type="password")
     if st.button("Unlock", type="primary"):
         if entered == password:
+            st.session_state.performance_metrics = []
             st.session_state.app_authenticated = True
+            st.session_state.unlock_started_at = time.perf_counter()
             st.rerun()
         st.error("Incorrect password.")
     return False
@@ -588,11 +594,17 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    started = time.perf_counter()
     initialize_database()
-    if not st.session_state.get("basket_file_synced"):
+    record_perf_metric("Startup: initialize database", started)
+    if should_sync_basket_file_on_startup() and not st.session_state.get("basket_file_synced"):
+        started = time.perf_counter()
         sync_basket_file()
+        record_perf_metric("Startup: sync basket file", started)
         st.session_state.basket_file_synced = True
         clear_data_cache()
+    elif not should_sync_basket_file_on_startup():
+        st.session_state.basket_file_synced = True
     prepare_startup_neon_sync()
 
     title_cols = st.columns([7.2, 0.72, 0.82], vertical_alignment="top")
@@ -710,6 +722,15 @@ def sync_basket_file() -> None:
     if db.BASKET_PATH.exists():
         rows = load_basket_rows(db.BASKET_PATH)
         db.insert_basket_items(rows)
+
+
+def should_sync_basket_file_on_startup() -> bool:
+    value = os.getenv("CS2DT_SYNC_BASKET_ON_STARTUP", "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return not db.using_postgres()
 
 
 def local_neon_sync_available() -> bool:
@@ -947,6 +968,12 @@ def render_current_comparison() -> None:
     render_manual_market_repair(marketplace_order)
     render_tool_instructions()
     record_perf_metric("Current: total render", total_started)
+    unlock_started_at = st.session_state.pop("unlock_started_at", None)
+    if unlock_started_at:
+        record_perf_duration(
+            "Unlock to current page complete",
+            (time.perf_counter() - float(unlock_started_at)) * 1000,
+        )
 
 
 def render_fullscreen_table_css() -> None:
