@@ -208,7 +208,7 @@ def require_app_password() -> bool:
     if st.button("Unlock", type="primary"):
         if entered == password:
             st.session_state.app_authenticated = True
-            st.rerun()
+            return True
         st.error("Incorrect password.")
     return False
 
