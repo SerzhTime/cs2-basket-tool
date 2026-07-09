@@ -970,8 +970,9 @@ def sync_sqlite_to_postgres() -> dict[str, int]:
                 for row in target.execute("SELECT item_id, market_hash_name FROM basket_items").fetchall()
             }
             for snapshot in source.execute("SELECT * FROM snapshots ORDER BY timestamp, snapshot_id"):
-                target_snapshot_id = _postgres_snapshot_id_for_timestamp(target, snapshot["timestamp"])
-                target.execute("DELETE FROM price_points WHERE snapshot_id = ?", (target_snapshot_id,))
+                target_snapshot_id, existing_points = _postgres_snapshot_for_timestamp(target, snapshot["timestamp"])
+                if existing_points:
+                    continue
                 batch = []
                 for point in source.execute(
                     "SELECT * FROM price_points WHERE snapshot_id = ? ORDER BY price_point_id",
@@ -1252,12 +1253,24 @@ def _sync_marketplaces_to_postgres(source: sqlite3.Connection, target: DbConnect
         counts["marketplaces"] += 1
 
 
-def _postgres_snapshot_id_for_timestamp(target: DbConnection, timestamp: str) -> int:
-    row = target.execute("SELECT snapshot_id FROM snapshots WHERE timestamp = ? LIMIT 1", (timestamp,)).fetchone()
+def _postgres_snapshot_for_timestamp(target: DbConnection, timestamp: str) -> tuple[int, int]:
+    row = target.execute(
+        """
+        SELECT
+            s.snapshot_id,
+            COUNT(pp.price_point_id) AS point_count
+        FROM snapshots s
+        LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
+        WHERE s.timestamp = ?
+        GROUP BY s.snapshot_id
+        LIMIT 1
+        """,
+        (timestamp,),
+    ).fetchone()
     if row:
-        return int(row["snapshot_id"])
+        return int(row["snapshot_id"]), int(row["point_count"] or 0)
     cur = target.execute("INSERT INTO snapshots(timestamp) VALUES (?) RETURNING snapshot_id", (timestamp,))
-    return int(cur.fetchone()["snapshot_id"])
+    return int(cur.fetchone()["snapshot_id"]), 0
 
 
 def _none_if_blank(value):
