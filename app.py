@@ -208,36 +208,14 @@ def require_app_password() -> bool:
     if st.button("Unlock", type="primary"):
         if entered == password:
             st.session_state.app_authenticated = True
-            st.session_state.post_unlock_shell = True
             st.rerun()
         st.error("Incorrect password.")
     return False
 
 
-def render_post_unlock_shell() -> bool:
-    if not st.session_state.pop("post_unlock_shell", False):
-        return False
-    st.title("CS2 Basket Price Comparison")
-    st.caption("Opening dashboard...")
-    st.info("Loading latest basket data. This should only take a moment.")
-    components.html(
-        """
-        <script>
-        window.setTimeout(() => {
-            window.parent.location.reload();
-        }, 150);
-        </script>
-        """,
-        height=0,
-    )
-    return True
-
-
 def main() -> None:
     st.set_page_config(page_title="CS2 Basket Price Comparison", layout="wide")
     if not require_app_password():
-        return
-    if render_post_unlock_shell():
         return
     st.markdown(
         """
