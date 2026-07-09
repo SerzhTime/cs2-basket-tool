@@ -208,7 +208,7 @@ def require_app_password() -> bool:
     if st.button("Unlock", type="primary"):
         if entered == password:
             st.session_state.app_authenticated = True
-            st.rerun()
+            return True
         st.error("Incorrect password.")
     return False
 
@@ -669,6 +669,8 @@ def main() -> None:
         st.success(st.session_state.pop("sync_notice"))
     if "sync_error" in st.session_state:
         st.error(st.session_state.pop("sync_error"))
+    render_pending_neon_sync_timer()
+
     page = st.segmented_control(
         "Page",
         [
@@ -768,6 +770,23 @@ def schedule_delayed_neon_sync() -> None:
     if local_neon_sync_available():
         st.session_state.pending_neon_sync_at = time.time() + 15 * 60
         st.session_state.pending_neon_sync_trigger = "delayed"
+
+
+def render_pending_neon_sync_timer() -> None:
+    due_at = st.session_state.get("pending_neon_sync_at")
+    if not due_at or not local_neon_sync_available():
+        return
+    delay_ms = max(1000, int((float(due_at) - time.time()) * 1000))
+    components.html(
+        f"""
+        <script>
+        window.setTimeout(() => {{
+            window.parent.location.reload();
+        }}, {delay_ms});
+        </script>
+        """,
+        height=0,
+    )
 
 
 def render_last_updated_meta(status: str | None = None) -> None:
