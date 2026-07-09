@@ -48,6 +48,7 @@ load_streamlit_secrets_into_env()
 TABLE_BACKGROUND = "#f9fafb80"
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 LOGO_DIR = db.APP_DIR / "assets" / "logos"
+DEFAULT_COMPARISON_CACHE_KEY = "current_comparison_default_html"
 MARKETPLACE_LOGO_FILES = {
     "HaloSkins": "haloskins.png",
     "CSFloat": "csfloat.png",
@@ -134,8 +135,45 @@ def cached_update_runs() -> list[dict]:
     return [dict(row) for row in db.update_runs()]
 
 
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_comparison_data(snapshot_id: int) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    items = cached_basket_items(active_only=False)
+    points = cached_latest_price_points(snapshot_id)
+    marketplace_order = enabled_marketplace_names()
+    comparison, coverage = build_comparison_table(items, points, marketplace_order)
+    return comparison, coverage, marketplace_order
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def cached_comparison_table_html(
+    df: pd.DataFrame,
+    column_widths: dict[str, int],
+    *,
+    fullscreen: bool,
+    include_logos: bool,
+) -> str:
+    return render_comparison_table_html(
+        df,
+        column_widths,
+        fullscreen=fullscreen,
+        include_logos=include_logos,
+    )
+
+
 def clear_data_cache() -> None:
     st.cache_data.clear()
+
+
+def record_perf_metric(label: str, started_at: float) -> None:
+    metrics = st.session_state.setdefault("performance_metrics", [])
+    metrics.append(
+        {
+            "step": label,
+            "duration_ms": round((time.perf_counter() - started_at) * 1000, 1),
+            "at": datetime.now(UTC_PLUS_8).strftime("%H:%M:%S"),
+        }
+    )
+    del metrics[:-12]
 
 
 def require_app_password() -> bool:
@@ -629,6 +667,7 @@ def main() -> None:
 
     if page == "Current Basket Comparison":
         render_current_comparison()
+        prewarm_inactive_page_caches()
     elif page == "Historical Graph":
         render_history()
     elif page == "Basket Items":
@@ -755,18 +794,24 @@ def render_update_status(status: str | None = None) -> None:
 
 
 def render_current_comparison() -> None:
+    total_started = time.perf_counter()
     snapshot = cached_latest_snapshot()
     if snapshot is None:
         st.info("Click Update prices to create the first local snapshot.")
         return
 
+    cached_shell = st.empty()
+    display_cache = db.get_display_cache(DEFAULT_COMPARISON_CACHE_KEY)
+    if display_cache and int(display_cache["snapshot_id"] or 0) == int(snapshot["snapshot_id"]):
+        cached_shell.markdown(display_cache["payload"], unsafe_allow_html=True)
+
     loading_placeholder = st.empty()
     loading_placeholder.caption("Loading latest comparison data...")
-    items = cached_basket_items(active_only=False)
-    points = cached_latest_price_points(int(snapshot["snapshot_id"]))
-    marketplace_order = enabled_marketplace_names()
-    comparison, _ = build_comparison_table(items, points, marketplace_order)
+    data_started = time.perf_counter()
+    comparison, _, marketplace_order = cached_comparison_data(int(snapshot["snapshot_id"]))
+    record_perf_metric("Current: load comparison data", data_started)
     loading_placeholder.empty()
+    cached_shell.empty()
     market_options = [name for name in marketplace_order if name != BASELINE_MARKETPLACE]
     selected_markets = st.multiselect(
         "Select Marketplaces",
@@ -782,35 +827,6 @@ def render_current_comparison() -> None:
         st.session_state.fullscreen_table = False
     if "comparison_view_mode" not in st.session_state:
         st.session_state.comparison_view_mode = "All markets"
-    if st.session_state.fullscreen_table:
-        st.markdown(
-            """
-            <style>
-            .st-key-comparison_controls {
-                background: rgba(255, 255, 255, 0.96);
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                box-shadow: 0 8px 26px rgba(15, 23, 42, 0.12);
-                left: 18px;
-                padding: 8px 10px;
-                position: fixed;
-                right: 18px;
-                top: 10px;
-                z-index: 1000002;
-            }
-            .st-key-comparison_controls [data-baseweb="select"] {
-                position: relative;
-                z-index: 1000004;
-            }
-            .st-key-comparison_controls div[data-testid="stDownloadButton"],
-            .st-key-comparison_controls div[data-testid="stButton"] {
-                position: relative;
-                z-index: 1000004;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
 
     render_kpi_cards(comparison, selected_markets)
 
@@ -836,7 +852,6 @@ def render_current_comparison() -> None:
                 use_container_width=True,
             ):
                 st.session_state.show_difference_only = not st.session_state.show_difference_only
-                st.rerun()
         mode = view_label_to_mode[selected_view_label]
         display_df = filtered_comparison(
             comparison,
@@ -862,7 +877,9 @@ def render_current_comparison() -> None:
                 use_container_width=True,
             ):
                 st.session_state.fullscreen_table = not st.session_state.fullscreen_table
-                st.rerun()
+
+    if st.session_state.fullscreen_table:
+        render_fullscreen_table_css()
 
     if not selected_markets:
         st.info("Select at least one marketplace to show comparison columns.")
@@ -873,19 +890,86 @@ def render_current_comparison() -> None:
             st.info("No marketplaces match this view.")
         else:
             column_widths = comparison_column_widths(visible_columns)
+            html_started = time.perf_counter()
+            table_html = cached_comparison_table_html(
+                display_df,
+                column_widths,
+                fullscreen=st.session_state.fullscreen_table,
+                include_logos=True,
+            )
+            record_perf_metric("Current: render comparison HTML", html_started)
             st.markdown(
-                render_comparison_table_html(
-                    display_df,
-                    column_widths,
-                    fullscreen=st.session_state.fullscreen_table,
-                    include_logos=True,
-                ),
+                table_html,
                 unsafe_allow_html=True,
             )
+            if (
+                mode == "all"
+                and not st.session_state.show_difference_only
+                and not st.session_state.fullscreen_table
+                and set(selected_markets) == set(market_options)
+                and (
+                    not display_cache
+                    or int(display_cache["snapshot_id"] or 0) != int(snapshot["snapshot_id"])
+                    or display_cache["payload"] != table_html
+                )
+            ):
+                db.save_display_cache(DEFAULT_COMPARISON_CACHE_KEY, int(snapshot["snapshot_id"]), table_html)
             render_table_legend()
 
     render_manual_market_repair(marketplace_order)
     render_tool_instructions()
+    record_perf_metric("Current: total render", total_started)
+
+
+def render_fullscreen_table_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .st-key-comparison_controls {
+            background: rgba(255, 255, 255, 0.96);
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            box-shadow: 0 8px 26px rgba(15, 23, 42, 0.12);
+            left: 18px;
+            padding: 8px 10px;
+            position: fixed;
+            right: 18px;
+            top: 10px;
+            z-index: 1000002;
+        }
+        .st-key-comparison_controls [data-baseweb="select"] {
+            position: relative;
+            z-index: 1000004;
+        }
+        .st-key-comparison_controls div[data-testid="stDownloadButton"],
+        .st-key-comparison_controls div[data-testid="stButton"] {
+            position: relative;
+            z-index: 1000004;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def prewarm_inactive_page_caches() -> None:
+    snapshot = cached_latest_snapshot()
+    if snapshot is None:
+        return
+    snapshot_id = int(snapshot["snapshot_id"])
+    if st.session_state.get("prewarmed_snapshot_id") == snapshot_id:
+        return
+
+    placeholder = st.empty()
+    placeholder.caption("Preparing other pages...")
+    cached_update_runs()
+    cached_basket_items(active_only=False)
+    cached_marketplaces()
+    if not db.using_postgres():
+        cached_history_totals(since_iso=since_for_range("week"))
+        cached_latest_price_points(snapshot_id)
+    st.session_state.prewarmed_snapshot_id = snapshot_id
+    placeholder.empty()
 
 
 def is_marker_column(column: str) -> bool:
@@ -1734,7 +1818,7 @@ def render_history() -> None:
     range_label = st.segmented_control(
         "Time range",
         options=["day", "week", "month", "year", "all"],
-        default="all",
+        default="week",
     )
     since = since_for_range(range_label)
     rows = cached_history_totals(since_iso=since)
@@ -2156,6 +2240,20 @@ def render_marketplace_settings() -> None:
 
     render_marketplace_coverage()
     render_fetch_status()
+    render_performance_diagnostics()
+
+
+def render_performance_diagnostics() -> None:
+    st.subheader("Performance Diagnostics")
+    metrics = st.session_state.get("performance_metrics") or []
+    if not metrics:
+        st.caption("Open Current Basket Comparison once to collect render timing.")
+        return
+    st.dataframe(
+        pd.DataFrame(metrics),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def render_marketplace_coverage() -> None:
@@ -2165,9 +2263,7 @@ def render_marketplace_coverage() -> None:
         st.caption("No saved snapshot yet.")
         return
 
-    items = cached_basket_items(active_only=False)
-    points = cached_latest_price_points(int(snapshot["snapshot_id"]))
-    _, coverage = build_comparison_table(items, points, enabled_marketplace_names())
+    _, coverage, _ = cached_comparison_data(int(snapshot["snapshot_id"]))
     st.dataframe(
         format_simple_table(coverage, {"Total cost": lambda value: "N/A" if pd.isna(value) else f"${value:,.2f}"}),
         use_container_width=True,

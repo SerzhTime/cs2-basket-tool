@@ -224,6 +224,13 @@ def _schema_sql(backend: str | None = None) -> str:
 
             CREATE INDEX IF NOT EXISTS idx_update_runs_started_at
                 ON update_runs(started_at);
+
+            CREATE TABLE IF NOT EXISTS display_cache (
+                cache_key TEXT PRIMARY KEY,
+                snapshot_id INTEGER,
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         """
     return """
         PRAGMA foreign_keys = ON;
@@ -296,6 +303,13 @@ def _schema_sql(backend: str | None = None) -> str:
 
         CREATE INDEX IF NOT EXISTS idx_update_runs_started_at
             ON update_runs(started_at);
+
+        CREATE TABLE IF NOT EXISTS display_cache (
+            cache_key TEXT PRIMARY KEY,
+            snapshot_id INTEGER,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
     """
 
 
@@ -638,6 +652,33 @@ def update_runs(limit: int = 200) -> list[sqlite3.Row]:
                 """,
                 (limit,),
             ).fetchall()
+        )
+
+
+def get_display_cache(cache_key: str) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT cache_key, snapshot_id, payload, updated_at
+            FROM display_cache
+            WHERE cache_key = ?
+            """,
+            (cache_key,),
+        ).fetchone()
+
+
+def save_display_cache(cache_key: str, snapshot_id: int | None, payload: str) -> None:
+    with connect() as con:
+        con.execute(
+            """
+            INSERT INTO display_cache(cache_key, snapshot_id, payload, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                snapshot_id = excluded.snapshot_id,
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (cache_key, snapshot_id, payload, utc_now_iso()),
         )
 
 
