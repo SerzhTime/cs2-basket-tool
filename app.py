@@ -1922,13 +1922,26 @@ def render_history() -> None:
         render_update_runs_table()
         return
     marketplaces = sorted(hist["marketplace"].unique().tolist())
-    default_marketplaces = default_history_marketplaces(hist, marketplaces)
+    preferred_marketplaces = st.session_state.get("history_marketplaces_preferred")
+    if preferred_marketplaces is None:
+        preferred_marketplaces = default_history_marketplaces(hist, marketplaces)
+        st.session_state.history_marketplaces_preferred = preferred_marketplaces
+    selected_default = [marketplace for marketplace in preferred_marketplaces if marketplace in marketplaces]
+    range_changed = st.session_state.get("history_marketplaces_range") != range_label
+    if range_changed or "history_marketplaces_widget" not in st.session_state:
+        st.session_state.history_marketplaces_widget = selected_default
+        st.session_state.history_marketplaces_range = range_label
     selected = st.multiselect(
         "Marketplaces",
         marketplaces,
-        default=default_marketplaces,
-        key=f"history_marketplaces_{range_label}",
+        key="history_marketplaces_widget",
     )
+    unavailable_preferred = [
+        marketplace
+        for marketplace in preferred_marketplaces
+        if marketplace not in marketplaces
+    ]
+    st.session_state.history_marketplaces_preferred = selected + unavailable_preferred
     render_marketplace_tag_logo_decorator(marketplaces)
     if not selected:
         st.info("Select at least one marketplace.")
