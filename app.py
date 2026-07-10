@@ -615,10 +615,11 @@ def main() -> None:
         sync_clicked = st.button(
             "Sync Neon",
             use_container_width=True,
-            disabled=not local_neon_sync_available(),
+            disabled=not local_neon_sync_available() or automatic_neon_sync_busy(),
             help=(
                 "Two-way sync between local SQLite and Neon. "
-                "Available only in local SQLite mode with DATABASE_URL configured."
+                "Available only in local SQLite mode with DATABASE_URL configured. "
+                "Disabled while an automatic sync is pending or running."
             ),
         )
     with title_cols[2]:
@@ -630,14 +631,17 @@ def main() -> None:
         render_last_updated_meta()
     with meta_cols[1]:
         header_status = None
-        if sync_clicked:
+        if st.session_state.get("neon_sync_running"):
+            header_status = "Synchronizing local SQLite and Neon..."
+        elif sync_clicked:
             header_status = "Synchronizing local SQLite and Neon..."
         elif update_clicked:
             header_status = "Fetching enabled marketplace adapters..."
-        elif neon_sync_due():
+        elif automatic_neon_sync_busy():
             header_status = "Synchronizing local SQLite and Neon..."
         render_update_status(header_status)
     if sync_clicked:
+        suppress_pending_automatic_neon_sync()
         perform_neon_sync("manual")
         st.rerun()
     if update_clicked:
@@ -749,6 +753,11 @@ def prepare_startup_neon_sync() -> None:
 def run_due_neon_sync() -> None:
     if not local_neon_sync_available():
         return
+    if recent_manual_neon_sync():
+        st.session_state.pop("pending_startup_neon_sync", None)
+        st.session_state.pop("pending_neon_sync_at", None)
+        st.session_state.pop("pending_neon_sync_trigger", None)
+        return
     if st.session_state.pop("pending_startup_neon_sync", False):
         perform_neon_sync("startup")
         st.rerun()
@@ -766,6 +775,27 @@ def neon_sync_due() -> bool:
     return bool(due_at and local_neon_sync_available() and time.time() >= float(due_at))
 
 
+def automatic_neon_sync_busy() -> bool:
+    if st.session_state.get("neon_sync_running"):
+        return True
+    if not local_neon_sync_available():
+        return False
+    return bool(st.session_state.get("pending_startup_neon_sync")) or neon_sync_due()
+
+
+def suppress_pending_automatic_neon_sync() -> None:
+    now = time.time()
+    st.session_state.last_manual_neon_sync_started_at = now
+    st.session_state.pop("pending_startup_neon_sync", None)
+    st.session_state.pop("pending_neon_sync_at", None)
+    st.session_state.pop("pending_neon_sync_trigger", None)
+
+
+def recent_manual_neon_sync() -> bool:
+    started_at = st.session_state.get("last_manual_neon_sync_started_at")
+    return bool(started_at and time.time() - float(started_at) < 60)
+
+
 def perform_neon_sync(trigger: str) -> None:
     if db.using_postgres():
         st.session_state.sync_notice = "Online app already uses Neon directly. No local SQLite sync is needed."
@@ -774,11 +804,15 @@ def perform_neon_sync(trigger: str) -> None:
         st.session_state.sync_error = "DATABASE_URL is not configured, so Neon sync cannot run."
         return
 
+    st.session_state.neon_sync_running = True
     try:
-        counts = db.sync_sqlite_to_postgres()
-    except Exception as exc:
-        st.session_state.sync_error = str(exc)
-        return
+        try:
+            counts = db.sync_sqlite_to_postgres()
+        except Exception as exc:
+            st.session_state.sync_error = str(exc)
+            return
+    finally:
+        st.session_state.neon_sync_running = False
 
     st.session_state.sync_notice = (
         f"{sync_trigger_label(trigger)} sync completed: "

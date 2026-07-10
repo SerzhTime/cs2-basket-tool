@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import os
 import json
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -947,6 +948,19 @@ def sync_sqlite_to_postgres() -> dict[str, int]:
     if not postgres_database_url():
         raise RuntimeError("DATABASE_URL is not configured.")
 
+    for attempt in range(3):
+        try:
+            return _sync_sqlite_to_postgres_once()
+        except Exception as exc:
+            if not _is_deadlock_error(exc) or attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+
+    raise RuntimeError("Neon sync failed.")
+
+
+def _sync_sqlite_to_postgres_once() -> dict[str, int]:
+
     counts = {
         "basket_items": 0,
         "marketplaces": 0,
@@ -962,6 +976,7 @@ def sync_sqlite_to_postgres() -> dict[str, int]:
     try:
         with connect_postgres() as target:
             target.executescript(_schema_sql("postgres"))
+            _acquire_postgres_sync_lock(target)
             _sync_basket_items_to_postgres(source, target, counts)
             _sync_marketplaces_to_postgres(source, target, counts)
             _sync_update_runs_to_postgres(source, target, counts)
@@ -1014,6 +1029,17 @@ def sync_sqlite_to_postgres() -> dict[str, int]:
     finally:
         source.close()
     return counts
+
+
+def _acquire_postgres_sync_lock(target: DbConnection) -> None:
+    target.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("cs2dt_neon_sync",))
+
+
+def _is_deadlock_error(exc: Exception) -> bool:
+    sqlstate = getattr(exc, "sqlstate", None)
+    if sqlstate == "40P01":
+        return True
+    return "deadlock detected" in str(exc).lower()
 
 
 def _sync_missing_postgres_snapshots_to_sqlite(
