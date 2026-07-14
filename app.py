@@ -299,6 +299,8 @@ def main() -> None:
             background: rgba(209, 213, 219, 0.82);
             border: 1px solid #cbd5e1;
             border-radius: 8px;
+            display: flex;
+            flex-direction: column;
             min-height: 96px;
             padding: 0.75rem 0.8rem;
         }
@@ -321,7 +323,7 @@ def main() -> None:
             display: flex;
             gap: 0.65rem;
             justify-content: space-between;
-            margin-top: 0.42rem;
+            margin-top: auto;
         }
         .kpi-value {
             color: #0f172a;
@@ -333,10 +335,15 @@ def main() -> None:
         .kpi-sub {
             align-items: center;
             color: #475569;
-            display: flex;
+            display: -webkit-box;
             font-size: 0.78rem;
             gap: 0.45rem;
-            margin-top: 0.45rem;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            line-clamp: 2;
+            line-height: 1.35;
+            margin-top: auto;
+            overflow: hidden;
         }
         .kpi-inline-sub {
             color: #64748b;
@@ -1422,8 +1429,12 @@ def render_kpi_cards(comparison: pd.DataFrame, selected_markets: list[str]) -> N
         marketplace_kpi_card_html("Cheapest marketplace", kpis["cheapest"]),
         marketplace_kpi_card_html("Most expensive marketplace", kpis["most_expensive"]),
         marketplace_kpi_card_html("Steam price", kpis["steam"], empty_subtitle="No Steam price"),
-        kpi_card_html("Cheaper than HaloSkins", str(kpis["cheaper_count"]), "Markets"),
-        kpi_card_html("More expensive than HaloSkins", str(kpis["expensive_count"]), "Markets"),
+        kpi_card_html("Cheaper than HaloSkins", str(kpis["cheaper_count"]), market_list_text(kpis["cheaper_markets"])),
+        kpi_card_html(
+            "More expensive than HaloSkins",
+            str(kpis["expensive_count"]),
+            market_list_text(kpis["expensive_markets"]),
+        ),
     ]
     st.markdown(f'<div class="kpi-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
@@ -1438,6 +1449,8 @@ def build_kpis(comparison: pd.DataFrame, selected_markets: list[str]) -> dict:
             "steam": None,
             "cheaper_count": 0,
             "expensive_count": 0,
+            "cheaper_markets": [],
+            "expensive_markets": [],
         }
 
     sum_row = sum_rows.iloc[0]
@@ -1449,9 +1462,9 @@ def build_kpis(comparison: pd.DataFrame, selected_markets: list[str]) -> dict:
             continue
         market_rows.append({"marketplace": marketplace, "total": float(total), "diff": float(diff)})
 
-    cheaper = [row for row in market_rows if row["diff"] < 0]
-    expensive = [row for row in market_rows if row["diff"] >= 0]
     non_steam_rows = [row for row in market_rows if row["marketplace"] != STEAM_MARKETPLACE]
+    cheaper = sorted((row for row in non_steam_rows if row["diff"] < 0), key=lambda row: row["diff"])
+    expensive = sorted((row for row in non_steam_rows if row["diff"] >= 0), key=lambda row: row["diff"], reverse=True)
     steam_row = next((row for row in market_rows if row["marketplace"] == STEAM_MARKETPLACE), None)
     if steam_row is None and STEAM_MARKETPLACE in comparison.columns:
         steam_total = sum_row.get(STEAM_MARKETPLACE)
@@ -1469,7 +1482,30 @@ def build_kpis(comparison: pd.DataFrame, selected_markets: list[str]) -> dict:
         "steam": steam_row,
         "cheaper_count": len(cheaper),
         "expensive_count": len(expensive),
+        "cheaper_markets": [row["marketplace"] for row in cheaper],
+        "expensive_markets": [row["marketplace"] for row in expensive],
     }
+
+
+def market_list_text(markets: list[str], *, max_chars: int = 78) -> str:
+    if not markets:
+        return "None"
+    full_text = ", ".join(markets)
+    if len(full_text) <= max_chars:
+        return full_text
+
+    visible: list[str] = []
+    for market in markets:
+        remaining = len(markets) - len(visible) - 1
+        suffix = f", +{remaining} more" if remaining > 0 else ""
+        candidate = ", ".join([*visible, market]) + suffix
+        if visible and len(candidate) > max_chars:
+            break
+        visible.append(market)
+
+    remaining = len(markets) - len(visible)
+    text = ", ".join(visible)
+    return f"{text}, +{remaining} more" if remaining > 0 else text
 
 
 def baseline_kpi_card_html(value: str) -> str:
