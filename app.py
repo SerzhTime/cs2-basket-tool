@@ -914,6 +914,29 @@ def main() -> None:
             border-color: #ff8a1f !important;
             color: #ffffff !important;
         }
+        /* Fallback for Streamlit builds that omit segmented-control test ids. */
+        html body .stApp .st-key-active_page button {
+            background: #ff6b2c !important;
+            border-color: #ff6b2c !important;
+            color: #ffffff !important;
+        }
+        html body .stApp .st-key-active_page button > div,
+        html body .stApp .st-key-active_page button > div > div {
+            background: transparent !important;
+        }
+        html body .stApp .st-key-active_page button[aria-checked="true"],
+        html body .stApp .st-key-active_page button[data-selected="true"],
+        html body .stApp .st-key-active_page button:hover {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
+        }
+        html body .stApp .st-key-active_page button[aria-checked="true"] *,
+        html body .stApp .st-key-active_page button[data-selected="true"] *,
+        html body .stApp .st-key-active_page button:hover * {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
