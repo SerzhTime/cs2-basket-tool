@@ -895,6 +895,25 @@ def main() -> None:
             color: #ffffff !important;
             -webkit-text-fill-color: #ffffff !important;
         }
+        /* Keep page navigation states explicit across Streamlit versions. */
+        html body .stApp .st-key-active_page button[data-testid="stBaseButton-segmented_control"],
+        html body .stApp .st-key-active_page button[data-testid="baseButton-secondary"] {
+            background: #ff6b2c !important;
+            border: 1px solid #ff6b2c !important;
+            color: #ffffff !important;
+        }
+        html body .stApp .st-key-active_page button[data-testid="stBaseButton-segmented_control"] *,
+        html body .stApp .st-key-active_page button[data-testid="baseButton-secondary"] * {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+        }
+        html body .stApp .st-key-active_page button[data-testid="stBaseButton-segmented_controlActive"],
+        html body .stApp .st-key-active_page button[data-testid="stBaseButton-segmented_control"]:hover,
+        html body .stApp .st-key-active_page button[data-testid="baseButton-secondary"]:hover {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
