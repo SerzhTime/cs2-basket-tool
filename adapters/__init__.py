@@ -8,6 +8,7 @@ from .dmarket import DMarketAdapter
 from .haloskins import HaloSkinsAdapter
 from .marketcsgo import MarketCSGOAdapter
 from .openskin import build_openskin_adapters, clear_openskin_cache
+from .skindeck import SkindeckAdapter
 from .skinport import SkinportAdapter, clear_skinport_cache
 from .webpage import PriceCompareWebAdapter
 from .waxpeer import WaxpeerAdapter
@@ -25,6 +26,7 @@ def build_adapter_registry() -> dict[str, MarketplaceAdapter]:
         DMarketAdapter(),
         MarketCSGOAdapter(),
         SkinportAdapter(),
+        SkindeckAdapter(),
         *build_openskin_adapters(),
         *build_csgoskins_adapters(),
         PriceCompareWebAdapter(),

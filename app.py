@@ -48,6 +48,8 @@ load_streamlit_secrets_into_env()
 TABLE_BACKGROUND = "#f9fafb80"
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 LOGO_DIR = db.APP_DIR / "assets" / "logos"
+NEON_SYNC_INTERVAL_SECONDS = 3 * 60 * 60
+NEON_SYNC_STATE_PATH = db.APP_DIR / ".runtime" / "neon_sync_state.json"
 DEFAULT_COMPARISON_CACHE_KEY = "current_comparison_default_html"
 MARKETPLACE_LOGO_FILES = {
     "HaloSkins": "haloskins.png",
@@ -72,6 +74,7 @@ MARKETPLACE_LOGO_FILES = {
     "Exeskins": "exeskins.png",
     "C5Game": "c5game.png",
     "Skinport": "skinport.webp",
+    "Skindeck": "skindeck.jfif",
     "Buff163": "buff163.webp",
     "YouPin": "youpin_clean.png",
     "Steam": "steam_clean.png",
@@ -83,6 +86,7 @@ API_REPAIR_MARKETPLACES = {
     "DMarket",
     "HaloSkins",
     "Market.CSGO",
+    "Skindeck",
     "Skinport",
     "Buff163",
     "YouPin",
@@ -235,6 +239,47 @@ def main() -> None:
     st.markdown(
         """
         <style>
+        html,
+        body,
+        [data-testid="stAppViewContainer"],
+        .stApp {
+            background: linear-gradient(180deg, #03050d 0%, #071a34 100%);
+            background-attachment: fixed;
+        }
+        [data-testid="stAppViewContainer"] {
+            position: relative;
+        }
+        [data-testid="stAppViewContainer"]::after {
+            display: none;
+        }
+        .block-container {
+            position: relative;
+            z-index: 1;
+        }
+        .stApp h1,
+        .stApp h2,
+        .stApp h3,
+        .stApp h4,
+        .stApp label,
+        .stApp [data-testid="stMarkdownContainer"] p,
+        .stApp [data-testid="stMarkdownContainer"] li,
+        .stApp [data-testid="stWidgetLabel"] p {
+            color: #f8fafc !important;
+        }
+        header[data-testid="stHeader"] {
+            background: rgba(3, 5, 13, 0.72) !important;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-bottom: 0;
+            box-shadow: none;
+            z-index: 1000000;
+        }
+        div[data-testid="stToolbar"] {
+            display: none !important;
+        }
+        [data-testid="stDecoration"] {
+            background: transparent;
+        }
         .block-container { padding-top: 1.45rem; }
         h1 {
             margin-bottom: 0.25rem !important;
@@ -245,7 +290,82 @@ def main() -> None:
         div[data-testid="stTabs"] [data-baseweb="tab-list"] {
             margin-top: 0;
         }
-        div[data-testid="stDataFrame"] { font-size: 0.86rem; }
+        div[data-testid="stTabs"] button[role="tab"] {
+            background: #f8fafc !important;
+            border: 1px solid #d1d5db !important;
+            color: #111827 !important;
+        }
+        div[data-testid="stTabs"] button[role="tab"] * {
+            color: #111827 !important;
+            opacity: 1 !important;
+        }
+        div[data-testid="stTabs"] button[role="tab"][aria-selected="true"],
+        div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] * {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
+        }
+        div[data-testid="stTabs"] button[role="tab"]:hover,
+        div[data-testid="stTabs"] button[role="tab"]:hover * {
+            background: transparent !important;
+            color: #ffffff !important;
+        }
+        html body .stApp div[data-testid="stSegmentedControl"] button,
+        html body .stApp div[data-testid="stSegmentedControl"] button *,
+        html body .stApp div[data-testid="stSegmentedControl"] label,
+        html body .stApp div[data-testid="stSegmentedControl"] label *,
+        html body .stApp div[data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"],
+        html body .stApp div[data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"] * {
+            background: #ff6b2c !important;
+            border-color: #ff6b2c !important;
+            color: #111827 !important;
+            opacity: 1 !important;
+        }
+        html body .stApp div[data-testid="stSegmentedControl"] button,
+        html body .stApp div[data-testid="stSegmentedControl"] label {
+            background: #ff6b2c !important;
+            border-color: #ff6b2c !important;
+            color: #ffffff !important;
+        }
+        html body .stApp div[data-testid="stSegmentedControl"] button *,
+        html body .stApp div[data-testid="stSegmentedControl"] label * {
+            color: #ffffff !important;
+        }
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-pressed="true"] *,
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-checked="true"],
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-checked="true"] *,
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-selected="true"],
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-selected="true"] *,
+        html body .stApp div[data-testid="stSegmentedControl"] label:has(input:checked),
+        html body .stApp div[data-testid="stSegmentedControl"] label:has(input:checked) *,
+        html body .stApp [role="radiogroup"] label:has(input:checked),
+        html body .stApp [role="radiogroup"] label:has(input:checked) * {
+            color: #ffffff !important;
+            opacity: 1 !important;
+        }
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-checked="true"],
+        html body .stApp div[data-testid="stSegmentedControl"] button[aria-selected="true"] {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+        }
+        html body .stApp div[data-testid="stSegmentedControl"] button:hover,
+        html body .stApp div[data-testid="stSegmentedControl"] button:hover *,
+        html body .stApp div[data-testid="stSegmentedControl"] label:hover,
+        html body .stApp div[data-testid="stSegmentedControl"] label:hover * {
+            border-color: #ff8a1f !important;
+            background: transparent !important;
+            color: #ffffff !important;
+        }
+        div[data-testid="stDataFrame"],
+        div[data-testid="stDataEditor"] {
+            background: rgba(209, 213, 219, 0.88);
+            border: 1px solid rgba(156, 163, 175, 0.94);
+            border-radius: 8px;
+            font-size: 0.86rem;
+            padding: 1px;
+        }
         div[data-baseweb="select"] [data-baseweb="tag"] {
             align-items: center !important;
             background: #374151 !important;
@@ -270,16 +390,16 @@ def main() -> None:
             width: 16px;
         }
         .dashboard-meta {
-            color: #64748b;
+            color: #dbeafe;
             font-size: 0.9rem;
             margin: -0.15rem 0 0.45rem 0;
         }
         .dashboard-meta .meta-status {
-            color: #64748b;
+            color: #dbeafe;
             margin-left: 0.75rem;
         }
         .header-update-status {
-            color: #64748b;
+            color: #dbeafe;
             font-size: 0.9rem;
             margin: -0.15rem 0 0.45rem 0;
             min-height: 1.2rem;
@@ -377,8 +497,23 @@ def main() -> None:
             margin-top: 0.55rem;
             padding: 0.65rem 0.85rem;
         }
+        .notice-gray {
+            background: rgba(255, 138, 31, 0.14);
+            border: 1px solid rgba(255, 138, 31, 0.48);
+            border-radius: 8px;
+            color: #ffb347;
+            font-weight: 700;
+            margin: 0.45rem 0 0.75rem 0;
+            padding: 0.85rem 1rem;
+        }
+        .repair-caption {
+            color: #f8fafc;
+            font-size: 0.88rem;
+            line-height: 1.45;
+            margin: -0.2rem 0 0.75rem 0;
+        }
         .comparison-title {
-            color: #111827;
+            color: #f8fafc;
             font-size: 1.5rem;
             font-weight: 700;
             margin: 0.5rem 0 0.35rem 0;
@@ -386,6 +521,156 @@ def main() -> None:
         div[data-testid="stDownloadButton"] button,
         div[data-testid="stButton"] button {
             min-height: 2.35rem;
+        }
+        div[data-testid="stDownloadButton"] button,
+        div[data-testid="stDownloadButton"] button *,
+        div[data-testid="stButton"] button:not([kind="primary"]),
+        div[data-testid="stButton"] button:not([kind="primary"]) * {
+            color: #111827 !important;
+        }
+        div[data-testid="stDownloadButton"] button,
+        div[data-testid="stButton"] button:not([kind="primary"]) {
+            background: #f8fafc !important;
+            border: 1px solid #d1d5db !important;
+        }
+        div[data-testid="stDownloadButton"] button:hover,
+        div[data-testid="stDownloadButton"] button:hover *,
+        div[data-testid="stButton"] button:not([kind="primary"]):hover,
+        div[data-testid="stButton"] button:not([kind="primary"]):hover * {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
+        }
+        html body .stApp button[data-testid="baseButton-secondary"],
+        html body .stApp button[data-testid="baseButton-secondary"] *,
+        html body .stApp button[data-testid="stBaseButton-secondary"],
+        html body .stApp button[data-testid="stBaseButton-secondary"] *,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"],
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"] *,
+        html body .stApp button[data-testid="baseButton-secondary"] [data-testid="stMarkdownContainer"],
+        html body .stApp button[data-testid="baseButton-secondary"] [data-testid="stMarkdownContainer"] *,
+        html body .stApp button[data-testid="stBaseButton-secondary"] [data-testid="stMarkdownContainer"],
+        html body .stApp button[data-testid="stBaseButton-secondary"] [data-testid="stMarkdownContainer"] *,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"] [data-testid="stMarkdownContainer"],
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"] [data-testid="stMarkdownContainer"] *,
+        html body .stApp button[data-testid="baseButton-secondary"] p,
+        html body .stApp button[data-testid="baseButton-secondary"] span,
+        html body .stApp button[data-testid="stBaseButton-secondary"] p,
+        html body .stApp button[data-testid="stBaseButton-secondary"] span,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"] p,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"] span {
+            color: #111827 !important;
+            opacity: 1 !important;
+        }
+        html body .stApp button[data-testid="baseButton-secondary"] svg,
+        html body .stApp button[data-testid="stBaseButton-secondary"] svg,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"] svg {
+            color: #111827 !important;
+            fill: none !important;
+            stroke: #111827 !important;
+        }
+        html body .stApp button[data-testid="baseButton-secondary"]:hover,
+        html body .stApp button[data-testid="baseButton-secondary"]:hover *,
+        html body .stApp button[data-testid="stBaseButton-secondary"]:hover,
+        html body .stApp button[data-testid="stBaseButton-secondary"]:hover *,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"]:hover,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"]:hover * {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
+        }
+        html body .stApp button[data-testid="baseButton-secondary"]:disabled,
+        html body .stApp button[data-testid="baseButton-secondary"][disabled],
+        html body .stApp button[data-testid="stBaseButton-secondary"]:disabled,
+        html body .stApp button[data-testid="stBaseButton-secondary"][disabled],
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"]:disabled,
+        html body .stApp button[data-testid="baseButton-secondaryFormSubmit"][disabled] {
+            background: rgba(209, 213, 219, 0.92) !important;
+            border-color: rgba(156, 163, 175, 0.95) !important;
+            opacity: 1 !important;
+        }
+        html body .stApp div[data-testid="stButton"] button:disabled,
+        html body .stApp div[data-testid="stButton"] button:disabled *,
+        html body .stApp div[data-testid="stButton"] button[disabled],
+        html body .stApp div[data-testid="stButton"] button[disabled] *,
+        html body .stApp div[data-testid="stDownloadButton"] button:disabled,
+        html body .stApp div[data-testid="stDownloadButton"] button:disabled *,
+        html body .stApp div[data-testid="stDownloadButton"] button[disabled],
+        html body .stApp div[data-testid="stDownloadButton"] button[disabled] * {
+            color: #111827 !important;
+            opacity: 1 !important;
+        }
+        html body .stApp div[data-testid="stButton"] button:disabled,
+        html body .stApp div[data-testid="stButton"] button[disabled],
+        html body .stApp div[data-testid="stDownloadButton"] button:disabled,
+        html body .stApp div[data-testid="stDownloadButton"] button[disabled] {
+            background: rgba(148, 163, 184, 0.82) !important;
+            border: 1px solid rgba(203, 213, 225, 0.95) !important;
+            opacity: 1 !important;
+        }
+        div[data-testid="stDownloadButton"] button[kind="primary"],
+        div[data-testid="stDownloadButton"] button[kind="primary"] *,
+        div[data-testid="stButton"] button[kind="primary"],
+        div[data-testid="stButton"] button[kind="primary"] * {
+            color: #ffffff !important;
+        }
+        div[data-testid="stButton"] button[kind="primary"] {
+            background: #ff6b2c !important;
+            border-color: #ff8a1f !important;
+        }
+        div[data-testid="stButton"] button[kind="primary"]:hover {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
+        }
+        html body .stApp button[data-testid="stBaseButton-segmented_control"],
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] *,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] [data-testid="stMarkdownContainer"],
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] [data-testid="stMarkdownContainer"] *,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] p,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] span {
+            color: #111827 !important;
+            opacity: 1 !important;
+        }
+        html body .stApp button[data-testid="stBaseButton-segmented_control"]:hover,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"]:hover *,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"]:hover [data-testid="stMarkdownContainer"],
+        html body .stApp button[data-testid="stBaseButton-segmented_control"]:hover [data-testid="stMarkdownContainer"] *,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"]:hover p,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"]:hover span {
+            color: #ffffff !important;
+            opacity: 1 !important;
+        }
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"],
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"] *,
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"] [data-testid="stMarkdownContainer"],
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"] [data-testid="stMarkdownContainer"] *,
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"] p,
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"] span {
+            color: #f8fafc !important;
+            opacity: 1 !important;
+        }
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"] {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+        }
+        .st-key-active_page button[data-testid="stBaseButton-segmented_control"],
+        .st-key-active_page button[data-testid="stBaseButton-segmented_control"] * {
+            background: #ff6b2c !important;
+            border-color: #ff6b2c !important;
+            color: #ffffff !important;
+        }
+        .st-key-active_page button,
+        .st-key-active_page button * {
+            color: #ffffff !important;
+        }
+        .st-key-active_page button[data-testid="stBaseButton-segmented_controlActive"],
+        .st-key-active_page button[data-testid="stBaseButton-segmented_controlActive"] *,
+        .st-key-active_page button[data-testid="stBaseButton-segmented_control"]:hover,
+        .st-key-active_page button[data-testid="stBaseButton-segmented_control"]:hover * {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
         }
         div[data-baseweb="popover"],
         div[data-baseweb="popover"] ul,
@@ -425,10 +710,10 @@ def main() -> None:
             box-shadow: 0 18px 60px rgba(15, 23, 42, 0.24);
             bottom: 18px;
             left: 18px;
-            max-height: calc(100vh - 88px);
+            max-height: calc(100vh - 116px);
             position: fixed;
             right: 18px;
-            top: 70px;
+            top: 98px;
             width: auto;
             z-index: 999999;
         }
@@ -451,8 +736,8 @@ def main() -> None:
             white-space: nowrap;
         }
         .comparison-html-table th {
-            background: rgba(209, 213, 219, 0.82);
-            color: #6b7280;
+            background: rgba(156, 163, 175, 0.94);
+            color: #111827;
             font-weight: 500;
             position: sticky;
             top: 0;
@@ -490,16 +775,16 @@ def main() -> None:
             text-overflow: ellipsis;
         }
         .comparison-html-table td.neutral-cell {
-            background: rgba(249, 250, 251, 0.50);
+            background: rgba(209, 213, 219, 0.88);
         }
         .comparison-html-table td.cheaper-market {
-            background: rgba(249, 250, 251, 0.50);
+            background: rgba(209, 213, 219, 0.88);
         }
         .comparison-html-table td.expensive-market {
-            background: rgba(249, 250, 251, 0.50);
+            background: rgba(209, 213, 219, 0.88);
         }
         .comparison-html-table td.halo-total {
-            background: rgba(255, 243, 191, 0.70);
+            background: rgba(255, 243, 191, 0.92);
         }
         .comparison-html-table td.fallback-cell {
             color: #9ca3af;
@@ -524,19 +809,23 @@ def main() -> None:
         }
         .comparison-html-table tr.sum-row td.neutral-cell,
         .comparison-html-table tr.repeat-header-row td.neutral-cell {
-            background: rgba(209, 213, 219, 0.82);
+            background: rgba(156, 163, 175, 0.94);
+            color: #111827;
         }
         .comparison-html-table tr.sum-row td.cheaper-market,
         .comparison-html-table tr.repeat-header-row td.cheaper-market {
-            background: rgba(209, 213, 219, 0.82);
+            background: rgba(156, 163, 175, 0.94);
+            color: #111827;
         }
         .comparison-html-table tr.sum-row td.expensive-market,
         .comparison-html-table tr.repeat-header-row td.expensive-market {
-            background: rgba(209, 213, 219, 0.82);
+            background: rgba(156, 163, 175, 0.94);
+            color: #111827;
         }
         .comparison-html-table tr.sum-row td.halo-total,
         .comparison-html-table tr.repeat-header-row td.halo-total {
             background: #fff3bf;
+            color: #111827;
         }
         .tool-instructions {
             margin-top: 1.25rem;
@@ -573,28 +862,38 @@ def main() -> None:
             text-overflow: ellipsis;
             vertical-align: middle;
             text-align: center;
-            background: rgba(249, 250, 251, 0.50);
+            background: rgba(209, 213, 219, 0.88);
         }
         .comparison-footer-table td.cheaper-market {
-            background: rgba(220, 252, 231, 0.50) !important;
+            background: rgba(209, 213, 219, 0.88) !important;
         }
         .comparison-footer-table td.expensive-market {
-            background: rgba(254, 226, 226, 0.50) !important;
+            background: rgba(209, 213, 219, 0.88) !important;
         }
         .comparison-footer-table tr.sum-row td {
             font-weight: 700;
             border-top: 2px solid #999;
             white-space: nowrap;
-            background: rgba(209, 213, 219, 0.82) !important;
+            background: rgba(156, 163, 175, 0.94) !important;
+            color: #111827;
         }
         .comparison-footer-table tr.repeat-header-row td {
             font-weight: 700;
-            background: rgba(209, 213, 219, 0.82) !important;
+            background: rgba(156, 163, 175, 0.94) !important;
+            color: #111827;
             white-space: normal;
             line-height: 1.2;
         }
         .comparison-footer-table td.halo-total {
-            background: rgba(255, 243, 191, 0.70) !important;
+            background: rgba(255, 243, 191, 0.92) !important;
+            color: #111827;
+        }
+        html body .stApp .st-key-active_page button,
+        html body .stApp .st-key-active_page button *,
+        html body .stApp .st-key-active_page button [data-testid="stMarkdownContainer"],
+        html body .stApp .st-key-active_page button [data-testid="stMarkdownContainer"] * {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
         }
         </style>
         """,
@@ -698,7 +997,10 @@ def main() -> None:
     if "update_error" in st.session_state:
         st.error(st.session_state.pop("update_error"))
     if "sync_notice" in st.session_state:
-        st.success(st.session_state.pop("sync_notice"))
+        st.markdown(
+            f'<div class="notice-gray">{escape(st.session_state.pop("sync_notice"))}</div>',
+            unsafe_allow_html=True,
+        )
     if "sync_error" in st.session_state:
         st.error(st.session_state.pop("sync_error"))
     render_pending_neon_sync_timer()
@@ -754,7 +1056,36 @@ def prepare_startup_neon_sync() -> None:
 
     if not st.session_state.get("startup_neon_sync_done"):
         st.session_state.startup_neon_sync_done = True
-        st.session_state.pending_startup_neon_sync = True
+        if neon_startup_sync_due():
+            st.session_state.pending_startup_neon_sync = True
+
+
+def last_successful_neon_sync_at() -> float | None:
+    try:
+        payload = json.loads(NEON_SYNC_STATE_PATH.read_text(encoding="utf-8"))
+        value = payload.get("last_successful_sync_at")
+        return float(value) if value is not None else None
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def neon_startup_sync_due() -> bool:
+    last_sync_at = last_successful_neon_sync_at()
+    return last_sync_at is None or time.time() - last_sync_at >= NEON_SYNC_INTERVAL_SECONDS
+
+
+def record_successful_neon_sync() -> None:
+    try:
+        NEON_SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = NEON_SYNC_STATE_PATH.with_suffix(".tmp")
+        temporary_path.write_text(
+            json.dumps({"last_successful_sync_at": time.time()}),
+            encoding="utf-8",
+        )
+        temporary_path.replace(NEON_SYNC_STATE_PATH)
+    except OSError:
+        # Sync itself succeeded; a missing local marker only means the next startup retries.
+        pass
 
 
 def run_due_neon_sync() -> None:
@@ -821,6 +1152,7 @@ def perform_neon_sync(trigger: str) -> None:
     finally:
         st.session_state.neon_sync_running = False
 
+    record_successful_neon_sync()
     st.session_state.sync_notice = (
         f"{sync_trigger_label(trigger)} sync completed: "
         f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points, "
@@ -927,7 +1259,11 @@ def render_current_comparison() -> None:
     }
     st.markdown('<div class="comparison-title">Comparison Table</div>', unsafe_allow_html=True)
     with st.container(key="comparison_controls"):
-        control_cols = st.columns([1.8, 1.2, 5.2, 0.32, 0.32], vertical_alignment="center")
+        control_cols = (
+            st.columns([1.8, 1.2, 5.0, 0.55, 0.55], vertical_alignment="center")
+            if st.session_state.fullscreen_table
+            else st.columns([1.8, 1.2, 5.2, 0.32, 0.32], vertical_alignment="center")
+        )
         with control_cols[0]:
             selected_view_label = st.selectbox(
                 "Market view",
@@ -967,6 +1303,7 @@ def render_current_comparison() -> None:
                 use_container_width=True,
             ):
                 st.session_state.fullscreen_table = not st.session_state.fullscreen_table
+                st.rerun()
 
     if st.session_state.fullscreen_table:
         render_fullscreen_table_css()
@@ -1030,8 +1367,18 @@ def render_fullscreen_table_css() -> None:
             padding: 8px 10px;
             position: fixed;
             right: 18px;
-            top: 10px;
-            z-index: 1000002;
+            top: 38px;
+            z-index: 2147483000;
+        }
+        .st-key-comparison_controls::before {
+            background: rgba(2, 6, 23, 0.92);
+            content: "";
+            height: 34px;
+            left: 0;
+            position: fixed;
+            right: 0;
+            top: 0;
+            z-index: -1;
         }
         .st-key-comparison_controls [data-baseweb="select"] {
             position: relative;
@@ -1041,6 +1388,12 @@ def render_fullscreen_table_css() -> None:
         .st-key-comparison_controls div[data-testid="stButton"] {
             position: relative;
             z-index: 1000004;
+        }
+        .st-key-comparison_controls button[data-testid="stBaseButton-secondary"] {
+            font-weight: 700;
+        }
+        .st-key-comparison_controls button[data-testid="stBaseButton-secondary"]:has(p:only-child) {
+            border-color: #94a3b8 !important;
         }
         </style>
         """,
@@ -1092,10 +1445,13 @@ def render_manual_market_repair(marketplace_order: list[str]) -> None:
 
     st.markdown('<div style="height: 1.35rem;"></div>', unsafe_allow_html=True)
     st.markdown("#### Repair Missing or Wrong Prices")
-    st.caption(
+    st.markdown(
+        '<div class="repair-caption">'
         "Use this when a marketplace has missing items or suspicious non-Steam prices more than 35% away from HaloSkins. "
         "It updates that same snapshot timestamp when new prices are found. API markets use only their API; "
         "non-API markets try direct item pages first and use third-party backups only when the direct page is unavailable."
+        "</div>",
+        unsafe_allow_html=True,
     )
     repair_cols = st.columns([3, 1], vertical_alignment="bottom")
     with repair_cols[0]:
@@ -1890,6 +2246,12 @@ def collect_snapshot() -> tuple[int, str, float]:
         )
 
     snapshot_id, timestamp = db.save_snapshot_results(recordable_results)
+    if skipped_marketplaces:
+        skipped = {marketplace for marketplace in skipped_marketplaces}
+        db.update_marketplace_statuses_from_results(
+            [result for result in all_results if result.marketplace in skipped],
+            timestamp,
+        )
     return snapshot_id, timestamp, success_rate
 
 
@@ -2005,7 +2367,14 @@ def render_history() -> None:
             "<extra></extra>"
         )
     )
-    fig.update_layout(hovermode="closest", legend_title_text="")
+    fig.update_layout(
+        hovermode="closest",
+        legend_title_text="",
+        paper_bgcolor="rgba(209, 213, 219, 0.88)",
+        plot_bgcolor="rgba(226, 232, 240, 0.92)",
+        font={"color": "#111827"},
+        margin={"l": 40, "r": 20, "t": 25, "b": 45},
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     st.dataframe(

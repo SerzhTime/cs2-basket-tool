@@ -379,6 +379,7 @@ def seed_marketplaces() -> None:
         "c5game",
         "dmarket",
         "marketcsgo",
+        "skindeck",
         "openskin_skinport",
         "openskin_buff163",
         "openskin_youpin",
@@ -665,6 +666,29 @@ def save_snapshot_results(results: Iterable[PriceResult]) -> tuple[int, str]:
                 (status, error, timestamp, marketplace),
             )
     return snapshot_id, timestamp
+
+
+def update_marketplace_statuses_from_results(results: Iterable[PriceResult], timestamp: str | None = None) -> None:
+    status_timestamp = timestamp or utc_now_iso()
+    status_by_marketplace: dict[str, list[tuple[str, str | None]]] = {}
+    for result in results:
+        status_by_marketplace.setdefault(result.marketplace, []).append(
+            (result.fetch_status, result.error_details)
+        )
+    if not status_by_marketplace:
+        return
+
+    with connect() as con:
+        for marketplace, statuses in status_by_marketplace.items():
+            status, error = summarize_fetch_status(statuses)
+            con.execute(
+                """
+                UPDATE marketplaces
+                SET last_status = ?, last_error = ?, updated_at = ?
+                WHERE name = ?
+                """,
+                (status, error, status_timestamp, marketplace),
+            )
 
 
 def record_update_run(
