@@ -267,12 +267,7 @@ def main() -> None:
             color: #f8fafc !important;
         }
         header[data-testid="stHeader"] {
-            background: rgba(3, 5, 13, 0.72) !important;
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border-bottom: 0;
-            box-shadow: none;
-            z-index: 1000000;
+            display: none !important;
         }
         div[data-testid="stToolbar"] {
             display: none !important;
@@ -409,6 +404,78 @@ def main() -> None:
         .header-button-spacer {
             height: 2.0rem;
         }
+        div[data-testid="stLayoutWrapper"]:has(> .st-key-app_sticky_header) {
+            background: rgba(2, 8, 23, 0.72);
+            backdrop-filter: blur(14px) saturate(125%);
+            -webkit-backdrop-filter: blur(14px) saturate(125%);
+            box-sizing: border-box;
+            left: 0;
+            padding: 0 5rem;
+            position: fixed;
+            right: 0;
+            top: 0;
+            z-index: 2147483001;
+        }
+        .st-key-app_sticky_header {
+            background: transparent;
+            padding: 0.15rem 0 0.35rem;
+        }
+        .st-key-app_sticky_header h1 {
+            padding: 0.45rem 0 0.2rem !important;
+        }
+        .st-key-app_sticky_header > div {
+            background: transparent;
+        }
+        .st-key-app_sticky_header .header-button-spacer {
+            height: 0.5rem;
+        }
+        .app-sticky-header-spacer {
+            height: 3rem;
+        }
+        @media (max-width: 900px) {
+            div[data-testid="stLayoutWrapper"]:has(> .st-key-app_sticky_header) {
+                padding: 0 1rem;
+            }
+        }
+        .st-key-sync_neon_button {
+            display: flex;
+            justify-content: flex-end;
+        }
+        .st-key-sync_neon_button button {
+            align-items: center !important;
+            display: flex !important;
+            height: 2.5rem !important;
+            justify-content: center !important;
+            min-height: 2.5rem !important;
+            min-width: 2.75rem !important;
+            padding: 0 !important;
+            width: 2.75rem !important;
+        }
+        .st-key-sync_neon_button button > div,
+        .st-key-sync_neon_button button > div > div {
+            align-items: center !important;
+            display: flex !important;
+            justify-content: center !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+        }
+        .st-key-sync_neon_button button p {
+            display: none !important;
+        }
+        .st-key-sync_neon_button button [data-testid="stIconMaterial"] {
+            font-size: 1.35rem !important;
+            line-height: 1 !important;
+            margin: 0 !important;
+            text-align: center !important;
+            transform: translateX(4px);
+            width: 1.35rem !important;
+        }
+        .st-key-update_prices_button button {
+            height: 2.5rem !important;
+            min-height: 2.5rem !important;
+            white-space: nowrap !important;
+        }
         .kpi-grid {
             display: grid;
             gap: 0.65rem;
@@ -416,23 +483,24 @@ def main() -> None:
             margin: 0.55rem 0 0.75rem 0;
         }
         .kpi-card {
-            background: rgba(209, 213, 219, 0.82);
-            border: 1px solid #cbd5e1;
+            background: transparent;
+            border: 1px solid #ff8a1f;
             border-radius: 8px;
+            color: #ffffff;
             display: flex;
             flex-direction: column;
             min-height: 96px;
             padding: 0.75rem 0.8rem;
         }
         .kpi-title {
-            color: #334155;
+            color: #ffffff;
             font-size: 0.76rem;
             font-weight: 700;
             margin-bottom: 0.45rem;
         }
         .kpi-market-line {
             align-items: center;
-            color: #334155;
+            color: #ffffff;
             display: flex;
             font-size: 0.8rem;
             gap: 0.45rem;
@@ -446,7 +514,7 @@ def main() -> None:
             margin-top: auto;
         }
         .kpi-value {
-            color: #0f172a;
+            color: #ffffff;
             font-size: 1.08rem;
             font-weight: 800;
             line-height: 1.15;
@@ -454,7 +522,7 @@ def main() -> None:
         }
         .kpi-sub {
             align-items: center;
-            color: #475569;
+            color: #ffffff;
             display: -webkit-box;
             font-size: 0.78rem;
             gap: 0.45rem;
@@ -466,7 +534,7 @@ def main() -> None:
             overflow: hidden;
         }
         .kpi-inline-sub {
-            color: #64748b;
+            color: #ffffff;
             flex: 0 0 auto;
             font-size: 0.74rem;
             font-weight: 700;
@@ -476,6 +544,10 @@ def main() -> None:
             height: 24px;
             object-fit: contain;
             width: 24px;
+        }
+        .kpi-card strong,
+        .kpi-card span:not(.kpi-diff) {
+            color: #ffffff;
         }
         .kpi-diff.negative,
         .diff-negative {
@@ -675,7 +747,18 @@ def main() -> None:
         div[data-baseweb="popover"],
         div[data-baseweb="popover"] ul,
         div[role="listbox"] {
+            background: rgba(7, 18, 35, 0.94) !important;
+            color: #ffffff !important;
             z-index: 1000003 !important;
+        }
+        div[data-baseweb="popover"] li,
+        div[role="option"] {
+            background: transparent !important;
+            color: #ffffff !important;
+        }
+        div[data-baseweb="popover"] li:hover,
+        div[role="option"]:hover {
+            background: rgba(255, 138, 31, 0.22) !important;
         }
         .fullscreen-toolbar-spacer {
             display: none;
@@ -698,22 +781,38 @@ def main() -> None:
             .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         .comparison-table-scroll {
-            border: 1px solid #e5e7eb;
+            background: transparent;
+            border: 1px solid #ff8a1f;
             border-radius: 6px;
             max-height: 820px;
             overflow: auto;
             width: 100%;
+            scrollbar-color: #ff8a1f rgba(255, 255, 255, 0.16);
+            scrollbar-width: auto;
+        }
+        .comparison-table-scroll::-webkit-scrollbar,
+        .comparison-footer-scroll::-webkit-scrollbar { height: 14px; width: 14px; }
+        .comparison-table-scroll::-webkit-scrollbar-track,
+        .comparison-footer-scroll::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+        }
+        .comparison-table-scroll::-webkit-scrollbar-thumb,
+        .comparison-footer-scroll::-webkit-scrollbar-thumb {
+            background: #ff8a1f;
+            border: 3px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
         }
         .comparison-table-scroll.fullscreen-table {
-            background: #ffffff;
+            background: #020817;
             border-radius: 8px;
             box-shadow: 0 18px 60px rgba(15, 23, 42, 0.24);
             bottom: 18px;
             left: 18px;
-            max-height: calc(100vh - 116px);
+            max-height: calc(100vh - 148px);
             position: fixed;
             right: 18px;
-            top: 98px;
+            top: 130px;
             width: auto;
             z-index: 999999;
         }
@@ -721,12 +820,14 @@ def main() -> None:
             border-collapse: collapse;
             table-layout: fixed;
             font-size: 0.86rem;
-            color: #111827;
+            color: #ffffff;
+            margin: 0 !important;
+            padding: 0 !important;
         }
         .comparison-html-table th,
         .comparison-html-table td {
-            border-right: 1px solid #e5e7eb;
-            border-bottom: 1px solid #e5e7eb;
+            border-right: 1px solid rgba(93, 105, 122, 0.42);
+            border-bottom: 1px solid rgba(93, 105, 122, 0.42);
             height: 34px;
             padding: 0 8px;
             overflow: hidden;
@@ -736,12 +837,16 @@ def main() -> None:
             white-space: nowrap;
         }
         .comparison-html-table th {
-            background: rgba(156, 163, 175, 0.94);
-            color: #111827;
+            background: rgba(28, 32, 41, 0.98);
+            color: #a8b0bd;
             font-weight: 500;
             position: sticky;
             top: 0;
             z-index: 4;
+        }
+        .comparison-html-table th.halo-total {
+            background: rgba(255, 138, 31, 0.24);
+            color: #ffffff;
         }
         .market-header {
             align-items: center;
@@ -756,6 +861,10 @@ def main() -> None:
             height: 18px;
             object-fit: contain;
             width: 18px;
+        }
+        img[alt="Steam logo"] {
+            background: #ffffff;
+            border-radius: 50% !important;
         }
         .market-logo-fallback {
             align-items: center;
@@ -775,16 +884,16 @@ def main() -> None:
             text-overflow: ellipsis;
         }
         .comparison-html-table td.neutral-cell {
-            background: rgba(209, 213, 219, 0.88);
+            background: #020817;
         }
         .comparison-html-table td.cheaper-market {
-            background: rgba(209, 213, 219, 0.88);
+            background: #020817;
         }
         .comparison-html-table td.expensive-market {
-            background: rgba(209, 213, 219, 0.88);
+            background: #020817;
         }
         .comparison-html-table td.halo-total {
-            background: rgba(255, 243, 191, 0.92);
+            background: rgba(255, 138, 31, 0.16);
         }
         .comparison-html-table td.fallback-cell {
             color: #9ca3af;
@@ -809,43 +918,425 @@ def main() -> None:
         }
         .comparison-html-table tr.sum-row td.neutral-cell,
         .comparison-html-table tr.repeat-header-row td.neutral-cell {
-            background: rgba(156, 163, 175, 0.94);
-            color: #111827;
+            background: #000000;
+            color: #ffffff;
         }
         .comparison-html-table tr.sum-row td.cheaper-market,
         .comparison-html-table tr.repeat-header-row td.cheaper-market {
-            background: rgba(156, 163, 175, 0.94);
-            color: #111827;
+            background: #000000;
+            color: #ffffff;
         }
         .comparison-html-table tr.sum-row td.expensive-market,
         .comparison-html-table tr.repeat-header-row td.expensive-market {
-            background: rgba(156, 163, 175, 0.94);
-            color: #111827;
+            background: #000000;
+            color: #ffffff;
         }
         .comparison-html-table tr.sum-row td.halo-total,
         .comparison-html-table tr.repeat-header-row td.halo-total {
-            background: #fff3bf;
-            color: #111827;
+            background: rgba(255, 138, 31, 0.24);
+            color: #ffffff;
         }
         .tool-instructions {
-            margin-top: 1.25rem;
-            padding: 0.75rem 1rem 0.25rem 1rem;
+            margin-top: -1.25rem;
+            padding: 0 1rem 0.25rem 1rem;
         }
         .tool-instructions h3 {
             font-size: 1rem;
-            margin: 0.75rem 0 0.75rem 0;
+            margin: 0 0 0.75rem 0;
+        }
+        .tool-instructions h3:not(:first-child) {
+            margin-top: 0.75rem;
         }
         .tool-instructions p,
         .tool-instructions li {
             line-height: 1.55;
         }
         .comparison-footer-scroll {
-            border: 1px solid #e5e7eb;
+            background: transparent;
+            border: 1px solid #ff8a1f;
             border-radius: 0 0 6px 6px;
             overflow-x: auto;
             overflow-y: hidden;
             width: 100%;
             margin-top: -0.15rem;
+            scrollbar-color: #ff8a1f rgba(255, 255, 255, 0.16);
+            scrollbar-width: auto;
+        }
+        html body .stApp [data-testid="stPlotlyChart"] {
+            background: transparent !important;
+            border: 1px solid #ff8a1f;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        /* Marketplace selectors use the same outlined treatment as controls. */
+        html body .stApp div[data-testid="stMultiSelect"] > div {
+            background: transparent !important;
+            border: 2px solid #ff8a1f !important;
+            border-radius: 8px !important;
+        }
+        html body .stApp div[data-testid="stMultiSelect"] [data-baseweb="select"],
+        html body .stApp div[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+        html body .stApp div[data-testid="stMultiSelect"] [data-baseweb="select"] > div > div {
+            background: transparent !important;
+            border: 0 !important;
+            outline: 0 !important;
+            box-shadow: none !important;
+        }
+        html body .stApp div[data-testid="stMultiSelect"] input,
+        html body .stApp div[data-testid="stMultiSelect"] input::placeholder {
+            color: rgba(255, 255, 255, 0.86) !important;
+            -webkit-text-fill-color: rgba(255, 255, 255, 0.86) !important;
+            opacity: 1 !important;
+        }
+        html body .stApp div[data-testid="stMultiSelect"] [data-baseweb="tag"] {
+            background: #26364d !important;
+            color: #ffffff !important;
+        }
+        html body .stApp div[data-testid="stMultiSelect"] [data-baseweb="tag"] * {
+            color: #ffffff !important;
+        }
+
+        /* Keep the graph timestamp table readable over the dark background. */
+        .st-key-history_timestamp_table {
+            background: transparent !important;
+            border: 1px solid #ff8a1f !important;
+            border-radius: 6px;
+            max-height: 390px;
+            overflow: auto;
+            scrollbar-color: #ff8a1f rgba(255, 255, 255, 0.12);
+            scrollbar-width: auto;
+        }
+        .st-key-history_timestamp_table::-webkit-scrollbar { width: 14px; }
+        .st-key-history_timestamp_table::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.12);
+        }
+        .st-key-history_timestamp_table::-webkit-scrollbar-thumb {
+            background: #ff8a1f;
+            border: 3px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+        }
+        .st-key-history_timestamp_table [data-testid="stDataFrame"] {
+            background: transparent !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] {
+            background: transparent !important;
+            color: #ffffff !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] > div,
+        .st-key-history_timestamp_table [data-testid="stTable"] > div > div {
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] table {
+            background: transparent !important;
+            border: 0 !important;
+            border-radius: 0;
+            border-collapse: collapse !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
+            line-height: 1.2 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            margin-bottom: -2px !important;
+            width: 100% !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] thead th {
+            background: rgba(28, 32, 41, 0.98) !important;
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 2 !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] th {
+            background: rgba(28, 32, 41, 0.98) !important;
+            border-right: 1px solid rgba(93, 105, 122, 0.42) !important;
+            border-bottom: 1px solid rgba(93, 105, 122, 0.42) !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
+            padding: 6px 8px !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] td {
+            background: transparent !important;
+            border-right: 1px solid rgba(93, 105, 122, 0.42) !important;
+            border-bottom: 1px solid rgba(93, 105, 122, 0.42) !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
+            padding: 6px 8px !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] th:first-child,
+        .st-key-history_timestamp_table [data-testid="stTable"] td:first-child {
+            border-left: 0 !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] thead tr:first-child th {
+            border-top: 0 !important;
+        }
+        .st-key-history_timestamp_table [data-testid="stTable"] tbody tr:last-child td {
+            border-bottom: 0 !important;
+        }
+        /* Shared styling for secondary tables and editable sheets. */
+        html body .stApp div[data-testid="stDataFrame"],
+        html body .stApp div[data-testid="stDataEditor"] {
+            background: transparent !important;
+            border: 1px solid #ff8a1f !important;
+            border-radius: 6px !important;
+            color: #ffffff !important;
+            overflow: hidden !important;
+        }
+        html body .stApp div[data-testid="stDataFrame"] > div,
+        html body .stApp div[data-testid="stDataEditor"] > div {
+            background: transparent !important;
+        }
+        html body .stApp div[data-testid="stDataFrame"] [role="columnheader"],
+        html body .stApp div[data-testid="stDataEditor"] [role="columnheader"] {
+            background: rgba(28, 32, 41, 0.98) !important;
+            color: #ffffff !important;
+            border-color: rgba(93, 105, 122, 0.42) !important;
+        }
+        html body .stApp div[data-testid="stDataFrame"] [role="gridcell"],
+        html body .stApp div[data-testid="stDataEditor"] [role="gridcell"] {
+            background: transparent !important;
+            color: #ffffff !important;
+            border-color: rgba(93, 105, 122, 0.42) !important;
+        }
+        html body .stApp div[data-testid="stDataFrame"] canvas,
+        html body .stApp div[data-testid="stDataEditor"] canvas {
+            background: transparent !important;
+        }
+        .st-key-update_run_log,
+        .st-key-last_update_item_status,
+        .st-key-adapter_status,
+        .st-key-marketplace_coverage,
+        .st-key-performance_diagnostics {
+            background: transparent !important;
+            border: 1px solid #ff8a1f !important;
+            border-radius: 6px;
+            max-height: 390px;
+            overflow: auto;
+            scrollbar-color: #ff8a1f rgba(255, 255, 255, 0.12);
+            scrollbar-width: auto;
+        }
+        .st-key-basket_items_editor,
+        .st-key-marketplace_settings_editor {
+            background: transparent !important;
+            border: 1px solid #ff8a1f !important;
+            border-radius: 6px;
+            max-height: 390px;
+            overflow: auto;
+            scrollbar-color: #ff8a1f rgba(255, 255, 255, 0.12);
+            scrollbar-width: auto;
+        }
+        .st-key-update_run_log table,
+        .st-key-last_update_item_status table,
+        .st-key-adapter_status table,
+        .st-key-marketplace_coverage table,
+        .st-key-performance_diagnostics table {
+            background: transparent !important;
+            border-collapse: collapse !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
+            line-height: 1.2 !important;
+            margin: 0 !important;
+            width: 100% !important;
+        }
+        .st-key-update_run_log [data-testid="stTable"],
+        .st-key-last_update_item_status [data-testid="stTable"],
+        .st-key-adapter_status [data-testid="stTable"],
+        .st-key-marketplace_coverage [data-testid="stTable"],
+        .st-key-performance_diagnostics [data-testid="stTable"],
+        .st-key-history_timestamp_table [data-testid="stTable"] {
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        .st-key-update_run_log [data-testid="stTable"] > div,
+        .st-key-last_update_item_status [data-testid="stTable"] > div,
+        .st-key-adapter_status [data-testid="stTable"] > div,
+        .st-key-marketplace_coverage [data-testid="stTable"] > div,
+        .st-key-performance_diagnostics [data-testid="stTable"] > div,
+        .st-key-history_timestamp_table [data-testid="stTable"] > div {
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        /* Streamlit adds an unbounded scroller inside each static table.  Let the
+           keyed orange container be the only scroll owner so sticky headers are
+           positioned against the visible sheet instead of the full table. */
+        .st-key-history_timestamp_table [data-testid="stElementContainer"],
+        .st-key-update_run_log [data-testid="stElementContainer"],
+        .st-key-last_update_item_status [data-testid="stElementContainer"],
+        .st-key-adapter_status [data-testid="stElementContainer"],
+        .st-key-marketplace_coverage [data-testid="stElementContainer"],
+        .st-key-performance_diagnostics [data-testid="stElementContainer"],
+        .st-key-history_timestamp_table [data-testid="stTable"],
+        .st-key-update_run_log [data-testid="stTable"],
+        .st-key-last_update_item_status [data-testid="stTable"],
+        .st-key-adapter_status [data-testid="stTable"],
+        .st-key-marketplace_coverage [data-testid="stTable"],
+        .st-key-performance_diagnostics [data-testid="stTable"],
+        .st-key-history_timestamp_table [data-testid="stTable"] > div,
+        .st-key-update_run_log [data-testid="stTable"] > div,
+        .st-key-last_update_item_status [data-testid="stTable"] > div,
+        .st-key-adapter_status [data-testid="stTable"] > div,
+        .st-key-marketplace_coverage [data-testid="stTable"] > div,
+        .st-key-performance_diagnostics [data-testid="stTable"] > div {
+            overflow: visible !important;
+            border: 0 !important;
+        }
+        .st-key-update_run_log table,
+        .st-key-last_update_item_status table,
+        .st-key-adapter_status table,
+        .st-key-marketplace_coverage table,
+        .st-key-performance_diagnostics table {
+            margin-bottom: -2px !important;
+        }
+        .st-key-update_run_log thead th,
+        .st-key-last_update_item_status thead th,
+        .st-key-adapter_status thead th,
+        .st-key-marketplace_coverage thead th,
+        .st-key-performance_diagnostics thead th,
+        .st-key-history_timestamp_table thead th {
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 3 !important;
+        }
+        .st-key-update_run_log tbody tr:last-child td,
+        .st-key-last_update_item_status tbody tr:last-child td,
+        .st-key-adapter_status tbody tr:last-child td,
+        .st-key-marketplace_coverage tbody tr:last-child td,
+        .st-key-performance_diagnostics tbody tr:last-child td,
+        .st-key-history_timestamp_table tbody tr:last-child td {
+            border-bottom: 0 !important;
+        }
+        .st-key-update_run_log th, .st-key-update_run_log td,
+        .st-key-last_update_item_status th, .st-key-last_update_item_status td,
+        .st-key-adapter_status th, .st-key-adapter_status td,
+        .st-key-marketplace_coverage th, .st-key-marketplace_coverage td,
+        .st-key-performance_diagnostics th, .st-key-performance_diagnostics td {
+            border: 1px solid rgba(93, 105, 122, 0.42) !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
+            padding: 6px 8px !important;
+        }
+        .st-key-update_run_log th, .st-key-last_update_item_status th,
+        .st-key-adapter_status th, .st-key-marketplace_coverage th,
+        .st-key-performance_diagnostics th {
+            background: rgba(28, 32, 41, 0.98) !important;
+        }
+        .st-key-update_run_log td, .st-key-last_update_item_status td,
+        .st-key-adapter_status td, .st-key-marketplace_coverage td,
+        .st-key-performance_diagnostics td {
+            background: transparent !important;
+        }
+        .st-key-update_run_log th:first-child, .st-key-update_run_log td:first-child,
+        .st-key-last_update_item_status th:first-child, .st-key-last_update_item_status td:first-child,
+        .st-key-adapter_status th:first-child, .st-key-adapter_status td:first-child,
+        .st-key-marketplace_coverage th:first-child, .st-key-marketplace_coverage td:first-child,
+        .st-key-performance_diagnostics th:first-child, .st-key-performance_diagnostics td:first-child {
+            border-left: 0 !important;
+        }
+        .st-key-update_run_log th:last-child, .st-key-update_run_log td:last-child,
+        .st-key-last_update_item_status th:last-child, .st-key-last_update_item_status td:last-child,
+        .st-key-adapter_status th:last-child, .st-key-adapter_status td:last-child,
+        .st-key-marketplace_coverage th:last-child, .st-key-marketplace_coverage td:last-child,
+        .st-key-performance_diagnostics th:last-child, .st-key-performance_diagnostics td:last-child,
+        .st-key-history_timestamp_table th:last-child,
+        .st-key-history_timestamp_table td:last-child {
+            border-right: 0 !important;
+        }
+        .st-key-update_run_log thead tr:first-child th,
+        .st-key-last_update_item_status thead tr:first-child th,
+        .st-key-adapter_status thead tr:first-child th,
+        .st-key-marketplace_coverage thead tr:first-child th,
+        .st-key-performance_diagnostics thead tr:first-child th {
+            border-top: 0 !important;
+        }
+        /* Match the native editable-grid typography and scrollbar visually.
+           Streamlit's static table wrappers otherwise retain a 16px font even
+           when the th/td itself is set to 13px. */
+        .st-key-history_timestamp_table th,
+        .st-key-update_run_log th,
+        .st-key-last_update_item_status th,
+        .st-key-adapter_status th,
+        .st-key-marketplace_coverage th,
+        .st-key-performance_diagnostics th {
+            padding: 10px 8px !important;
+            color: #a8b0bd !important;
+            font-weight: 400 !important;
+        }
+        .st-key-history_timestamp_table th *,
+        .st-key-update_run_log th *,
+        .st-key-last_update_item_status th *,
+        .st-key-adapter_status th *,
+        .st-key-marketplace_coverage th *,
+        .st-key-performance_diagnostics th * {
+            color: #a8b0bd !important;
+            -webkit-text-fill-color: #a8b0bd !important;
+            font-size: 13px !important;
+            font-weight: 400 !important;
+            line-height: 1.2 !important;
+        }
+        .st-key-history_timestamp_table td *,
+        .st-key-update_run_log td *,
+        .st-key-last_update_item_status td *,
+        .st-key-adapter_status td *,
+        .st-key-marketplace_coverage td *,
+        .st-key-performance_diagnostics td * {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            font-size: 13px !important;
+            line-height: 1.2 !important;
+        }
+        .st-key-history_timestamp_table,
+        .st-key-update_run_log,
+        .st-key-last_update_item_status,
+        .st-key-adapter_status,
+        .st-key-marketplace_coverage,
+        .st-key-performance_diagnostics {
+            scrollbar-width: thin !important;
+            scrollbar-color: rgba(156, 163, 175, 0.72) transparent !important;
+        }
+        .st-key-history_timestamp_table::-webkit-scrollbar,
+        .st-key-update_run_log::-webkit-scrollbar,
+        .st-key-last_update_item_status::-webkit-scrollbar,
+        .st-key-adapter_status::-webkit-scrollbar,
+        .st-key-marketplace_coverage::-webkit-scrollbar,
+        .st-key-performance_diagnostics::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        .st-key-history_timestamp_table::-webkit-scrollbar-track,
+        .st-key-update_run_log::-webkit-scrollbar-track,
+        .st-key-last_update_item_status::-webkit-scrollbar-track,
+        .st-key-adapter_status::-webkit-scrollbar-track,
+        .st-key-marketplace_coverage::-webkit-scrollbar-track,
+        .st-key-performance_diagnostics::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .st-key-history_timestamp_table::-webkit-scrollbar-thumb,
+        .st-key-update_run_log::-webkit-scrollbar-thumb,
+        .st-key-last_update_item_status::-webkit-scrollbar-thumb,
+        .st-key-adapter_status::-webkit-scrollbar-thumb,
+        .st-key-marketplace_coverage::-webkit-scrollbar-thumb,
+        .st-key-performance_diagnostics::-webkit-scrollbar-thumb {
+            background: rgba(156, 163, 175, 0.72);
+            border: 2px solid transparent;
+            background-clip: content-box;
+            border-radius: 8px;
+        }
+        /* Data editors already provide a bounded, sticky-header grid.  Avoid a
+           second outer scroller and place the orange edge on the grid itself. */
+        .st-key-basket_items_editor,
+        .st-key-marketplace_settings_editor {
+            border: 0 !important;
+            max-height: none !important;
+            overflow: visible !important;
+        }
+        .st-key-basket_items_editor [data-testid="stDataEditor"],
+        .st-key-marketplace_settings_editor [data-testid="stDataEditor"] {
+            border: 1px solid #ff8a1f !important;
+            border-radius: 6px !important;
+            color: #ffffff !important;
+            font-size: 13px !important;
         }
         .comparison-footer-table {
             border-collapse: collapse;
@@ -937,6 +1428,64 @@ def main() -> None:
             color: #ffffff !important;
             -webkit-text-fill-color: #ffffff !important;
         }
+        html body .stApp button[data-testid="stBaseButton-segmented_control"],
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] {
+            background: #ff6b2c !important;
+            border-color: #ff6b2c !important;
+            color: #ffffff !important;
+        }
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] *,
+        html body .stApp button[data-testid="stBaseButton-segmented_control"] * {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+        }
+        html body .stApp button[data-testid="stBaseButton-segmented_controlActive"],
+        html body .stApp button[data-testid="stBaseButton-segmented_control"]:hover {
+            background: transparent !important;
+            border-color: #ff8a1f !important;
+            color: #ffffff !important;
+        }
+        /* Pandas Styler emits an id-scoped header color. Match that specificity
+           so read-only sheets use the same muted header text as data editors. */
+        html body #root .stApp .st-key-history_timestamp_table th,
+        html body #root .stApp .st-key-history_timestamp_table th *,
+        html body #root .stApp .st-key-update_run_log th,
+        html body #root .stApp .st-key-update_run_log th *,
+        html body #root .stApp .st-key-last_update_item_status th,
+        html body #root .stApp .st-key-last_update_item_status th *,
+        html body #root .stApp .st-key-adapter_status th,
+        html body #root .stApp .st-key-adapter_status th *,
+        html body #root .stApp .st-key-marketplace_coverage th,
+        html body #root .stApp .st-key-marketplace_coverage th *,
+        html body #root .stApp .st-key-performance_diagnostics th,
+        html body #root .stApp .st-key-performance_diagnostics th * {
+            color: #a8b0bd !important;
+            -webkit-text-fill-color: #a8b0bd !important;
+        }
+        html body #root .stApp .st-key-history_timestamp_table th,
+        html body #root .stApp .st-key-update_run_log th,
+        html body #root .stApp .st-key-last_update_item_status th,
+        html body #root .stApp .st-key-adapter_status th,
+        html body #root .stApp .st-key-marketplace_coverage th,
+        html body #root .stApp .st-key-performance_diagnostics th {
+            padding: 10px 8px !important;
+            font-size: 14px !important;
+        }
+        html body #root .stApp .st-key-history_timestamp_table th *,
+        html body #root .stApp .st-key-update_run_log th *,
+        html body #root .stApp .st-key-last_update_item_status th *,
+        html body #root .stApp .st-key-adapter_status th *,
+        html body #root .stApp .st-key-marketplace_coverage th *,
+        html body #root .stApp .st-key-performance_diagnostics th *,
+        html body #root .stApp .st-key-history_timestamp_table td *,
+        html body #root .stApp .st-key-update_run_log td *,
+        html body #root .stApp .st-key-last_update_item_status td *,
+        html body #root .stApp .st-key-adapter_status td *,
+        html body #root .stApp .st-key-marketplace_coverage td *,
+        html body #root .stApp .st-key-performance_diagnostics td * {
+            font-size: 14px !important;
+            line-height: 1.2 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -955,26 +1504,34 @@ def main() -> None:
         st.session_state.basket_file_synced = True
     prepare_startup_neon_sync()
 
-    title_cols = st.columns([7.2, 0.72, 0.82], vertical_alignment="top")
-    with title_cols[0]:
-        st.title("CS2 Basket Price Comparison")
-    with title_cols[1]:
-        st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
-        sync_clicked = st.button(
-            "Sync Neon",
-            use_container_width=True,
-            disabled=not local_neon_sync_available() or automatic_neon_sync_busy(),
-            help=(
-                "Two-way sync between local SQLite and Neon. "
-                "Available only in local SQLite mode with DATABASE_URL configured. "
-                "Disabled while an automatic sync is pending or running."
-            ),
-        )
-    with title_cols[2]:
-        st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
-        update_clicked = st.button("Update prices", type="primary", use_container_width=True)
+    with st.container(key="app_sticky_header"):
+        title_cols = st.columns([6.9, 1.05, 0.32], vertical_alignment="top")
+        with title_cols[0]:
+            st.title("CS2 Basket Price Comparison")
+        with title_cols[1]:
+            st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
+            update_clicked = st.button(
+                "Update prices",
+                key="update_prices_button",
+                type="primary",
+                use_container_width=True,
+            )
+        with title_cols[2]:
+            st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
+            sync_clicked = st.button(
+                "Sync Neon",
+                key="sync_neon_button",
+                icon=":material/sync:",
+                disabled=not local_neon_sync_available() or automatic_neon_sync_busy(),
+                help=(
+                    "Two-way sync between local SQLite and Neon. "
+                    "Available only in local SQLite mode with DATABASE_URL configured. "
+                    "Disabled while an automatic sync is pending or running."
+                ),
+            )
+    st.markdown('<div class="app-sticky-header-spacer"></div>', unsafe_allow_html=True)
 
-    meta_cols = st.columns([7.2, 0.72, 0.82], vertical_alignment="top")
+    meta_cols = st.columns([6.9, 1.05, 0.32], vertical_alignment="top")
     with meta_cols[0]:
         render_last_updated_meta()
     with meta_cols[1]:
@@ -1401,26 +1958,25 @@ def render_fullscreen_table_css() -> None:
         """
         <style>
         .st-key-comparison_controls {
-            background: rgba(255, 255, 255, 0.96);
-            border: 1px solid #e5e7eb;
+            background: rgba(2, 8, 23, 0.78);
+            backdrop-filter: blur(14px) saturate(125%);
+            -webkit-backdrop-filter: blur(14px) saturate(125%);
+            border: 1px solid rgba(255, 138, 31, 0.82);
             border-radius: 8px;
-            box-shadow: 0 8px 26px rgba(15, 23, 42, 0.12);
+            box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
             left: 18px;
             padding: 8px 10px;
             position: fixed;
             right: 18px;
-            top: 38px;
+            top: 72px;
+            width: auto !important;
             z-index: 2147483000;
         }
-        .st-key-comparison_controls::before {
-            background: rgba(2, 6, 23, 0.92);
-            content: "";
-            height: 34px;
-            left: 0;
-            position: fixed;
-            right: 0;
-            top: 0;
-            z-index: -1;
+        @media (max-width: 1400px) {
+            .comparison-table-scroll.fullscreen-table {
+                max-height: calc(100vh - 164px);
+                top: 146px;
+            }
         }
         .st-key-comparison_controls [data-baseweb="select"] {
             position: relative;
@@ -2067,14 +2623,32 @@ def render_tool_instructions() -> None:
     )
 
 
-def format_simple_table(df: pd.DataFrame, formats: dict | None = None):
+def format_simple_table(
+    df: pd.DataFrame,
+    formats: dict | None = None,
+    *,
+    background: str = "rgba(156, 163, 175, 0.08)",
+    foreground: str = "#ffffff",
+    border: str = "#ff8a1f",
+):
     styler = (
-        df.style.set_table_styles([{"selector": "th", "props": [("text-align", "center")]}])
-        .set_properties(**{"background-color": TABLE_BACKGROUND, "text-align": "center"})
+        df.style.set_table_styles(
+            [
+                {"selector": "th", "props": [("text-align", "center"), ("background-color", background), ("color", foreground), ("border", f"1px solid {border}")]},
+                {"selector": "td", "props": [("border", f"1px solid {border}")]},
+            ]
+        )
+        .hide(axis="index")
+        .set_properties(**{"background-color": background, "color": foreground, "text-align": "center"})
     )
     if formats:
         styler = styler.format(formats)
     return styler
+
+
+def render_secondary_table(df: pd.DataFrame, key: str, formats: dict | None = None) -> None:
+    with st.container(key=key):
+        st.table(format_simple_table(df, formats))
 
 
 def to_utc8_datetime_series(values: pd.Series) -> pd.Series:
@@ -2098,7 +2672,11 @@ def render_comparison_table_html(
     columns = list(column_widths)
     width_total = sum(column_widths.values())
     colgroup = "".join(f'<col style="width: {width}px">' for width in column_widths.values())
-    headers = "".join(f"<th>{render_header_label(column, include_logos=include_logos)}</th>" for column in columns)
+    headers = "".join(
+        f'<th class="{footer_cell_class(column, columns) or "neutral-cell"}">'
+        f"{render_header_label(column, include_logos=include_logos)}</th>"
+        for column in columns
+    )
     rows = []
     for _, row in df.iterrows():
         row_class = comparison_row_class(row)
@@ -2337,7 +2915,7 @@ def render_fetch_status() -> None:
         return
     status_df = pd.DataFrame(rows)[["name", "last_status", "last_error", "updated_at"]]
     status_df["updated_at"] = status_df["updated_at"].map(format_timestamp_utc8)
-    st.dataframe(format_simple_table(status_df), use_container_width=True, hide_index=True)
+    render_secondary_table(status_df, "adapter_status")
 
 
 def render_history() -> None:
@@ -2412,21 +2990,41 @@ def render_history() -> None:
     fig.update_layout(
         hovermode="closest",
         legend_title_text="",
-        paper_bgcolor="rgba(209, 213, 219, 0.88)",
-        plot_bgcolor="rgba(226, 232, 240, 0.92)",
-        font={"color": "#111827"},
+        paper_bgcolor="rgba(0, 0, 0, 0)",
+        plot_bgcolor="rgba(0, 0, 0, 0)",
+        font={"color": "#ffffff"},
+        legend={
+            "bgcolor": "rgba(28, 32, 41, 0.94)",
+            "bordercolor": "rgba(93, 105, 122, 0.72)",
+            "borderwidth": 1,
+            "font": {"color": "#ffffff"},
+        },
         margin={"l": 40, "r": 20, "t": 25, "b": 45},
+    )
+    fig.update_xaxes(
+        color="#cbd5e1",
+        gridcolor="rgba(93, 105, 122, 0.42)",
+        linecolor="rgba(93, 105, 122, 0.72)",
+        zerolinecolor="rgba(93, 105, 122, 0.42)",
+    )
+    fig.update_yaxes(
+        color="#cbd5e1",
+        gridcolor="rgba(93, 105, 122, 0.42)",
+        linecolor="rgba(93, 105, 122, 0.72)",
+        zerolinecolor="rgba(93, 105, 122, 0.42)",
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.dataframe(
-        format_simple_table(
-            format_history_table(chart_df),
-            {"total_cost": "${:,.2f}"},
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+    with st.container(key="history_timestamp_table"):
+        st.table(
+            format_simple_table(
+                format_history_table(chart_df),
+                {"total_cost": "${:,.2f}"},
+                background="rgba(156, 163, 175, 0.08)",
+                foreground="#ffffff",
+                border="#ff8a1f",
+            ),
+        )
     render_update_runs_table()
 
 
@@ -2499,7 +3097,7 @@ def render_update_runs_table() -> None:
             "error_details": "error",
         }
     )
-    st.dataframe(format_simple_table(table_df), use_container_width=True, hide_index=True)
+    render_secondary_table(table_df, "update_run_log")
 
 
 def format_duration_seconds(value: object) -> str:
@@ -2538,45 +3136,34 @@ def render_basket_items() -> None:
 
     df = pd.DataFrame(rows)
     df["active"] = df["active"].astype(bool)
-    edited = st.data_editor(
-        df[
-            [
-                "item_id",
-                "market_hash_name",
-                "active",
-                "multiplier",
-                "notes",
-                "source_rank",
-                "source_amount",
-                "price_compare_url",
-                "priceempire_url",
-                "steamanalyst_url",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-        disabled=[
-            "item_id",
-            "market_hash_name",
-            "source_rank",
-            "source_amount",
-            "price_compare_url",
-            "priceempire_url",
-            "steamanalyst_url",
-        ],
-        column_config={
-            "item_id": st.column_config.NumberColumn("item_id", width="small"),
-            "market_hash_name": st.column_config.TextColumn("market_hash_name", width="large"),
-            "active": st.column_config.CheckboxColumn("active"),
-            "multiplier": st.column_config.NumberColumn("multiplier", min_value=1, step=1),
-            "notes": st.column_config.TextColumn("notes"),
-            "source_rank": st.column_config.NumberColumn("source_rank", width="small"),
-            "source_amount": st.column_config.NumberColumn("source_amount"),
-            "price_compare_url": st.column_config.LinkColumn("CSGOSKINS link", width="medium"),
-            "priceempire_url": st.column_config.LinkColumn("PriceEmpire link", width="medium"),
-            "steamanalyst_url": st.column_config.LinkColumn("SteamAnalyst link", width="medium"),
-        },
-    )
+    with st.container(key="basket_items_editor"):
+        edited = st.data_editor(
+            df[
+                [
+                    "item_id", "market_hash_name", "active", "multiplier", "notes",
+                    "source_rank", "source_amount", "price_compare_url", "priceempire_url", "steamanalyst_url",
+                ]
+            ],
+            use_container_width=True,
+            height=390,
+            hide_index=True,
+            disabled=[
+                "item_id", "market_hash_name", "source_rank", "source_amount",
+                "price_compare_url", "priceempire_url", "steamanalyst_url",
+            ],
+            column_config={
+                "item_id": st.column_config.NumberColumn("item_id", width="small"),
+                "market_hash_name": st.column_config.TextColumn("market_hash_name", width="large"),
+                "active": st.column_config.CheckboxColumn("active"),
+                "multiplier": st.column_config.NumberColumn("multiplier", min_value=1, step=1),
+                "notes": st.column_config.TextColumn("notes"),
+                "source_rank": st.column_config.NumberColumn("source_rank", width="small"),
+                "source_amount": st.column_config.NumberColumn("source_amount"),
+                "price_compare_url": st.column_config.LinkColumn("CSGOSKINS link", width="medium"),
+                "priceempire_url": st.column_config.LinkColumn("PriceEmpire link", width="medium"),
+                "steamanalyst_url": st.column_config.LinkColumn("SteamAnalyst link", width="medium"),
+            },
+        )
     if st.button("Save basket item changes", type="primary"):
         db.update_basket_items(edited.to_dict("records"))
         clear_data_cache()
@@ -2598,11 +3185,7 @@ def render_item_update_status(items: list[dict]) -> None:
     if not status_rows:
         st.caption("No item status rows are available for the latest snapshot.")
         return
-    st.dataframe(
-        format_simple_table(pd.DataFrame(status_rows)),
-        use_container_width=True,
-        hide_index=True,
-    )
+    render_secondary_table(pd.DataFrame(status_rows), "last_update_item_status")
 
 
 def build_item_update_status_rows(items: list[dict], points, timestamp: str) -> list[dict]:
@@ -2757,26 +3340,23 @@ def render_marketplace_settings() -> None:
         )
 
     df = pd.DataFrame(rows)
-    edited = st.data_editor(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        disabled=[
-            "adapter_key",
-            "name",
-            "is_baseline",
-            "requires_credentials",
-            "credentials_configured",
-            "last_status",
-            "last_error",
-        ],
-        column_config={
-            "enabled": st.column_config.CheckboxColumn("enabled"),
-            "is_baseline": st.column_config.CheckboxColumn("baseline"),
-            "requires_credentials": st.column_config.CheckboxColumn("needs credentials"),
-            "credentials_configured": st.column_config.CheckboxColumn("credentials configured"),
-        },
-    )
+    with st.container(key="marketplace_settings_editor"):
+        edited = st.data_editor(
+            df,
+            use_container_width=True,
+            height=390,
+            hide_index=True,
+            disabled=[
+                "adapter_key", "name", "is_baseline", "requires_credentials",
+                "credentials_configured", "last_status", "last_error",
+            ],
+            column_config={
+                "enabled": st.column_config.CheckboxColumn("enabled"),
+                "is_baseline": st.column_config.CheckboxColumn("baseline"),
+                "requires_credentials": st.column_config.CheckboxColumn("needs credentials"),
+                "credentials_configured": st.column_config.CheckboxColumn("credentials configured"),
+            },
+        )
     st.caption(f"{BASELINE_MARKETPLACE} is always enabled because all differences use it as the baseline.")
     if st.button("Save marketplace settings", type="primary"):
         db.update_marketplace_settings(edited.to_dict("records"))
@@ -2795,11 +3375,7 @@ def render_performance_diagnostics() -> None:
     if not metrics:
         st.caption("Open Current Basket Comparison once to collect render timing.")
         return
-    st.dataframe(
-        pd.DataFrame(metrics),
-        use_container_width=True,
-        hide_index=True,
-    )
+    render_secondary_table(pd.DataFrame(metrics), "performance_diagnostics")
 
 
 def render_marketplace_coverage() -> None:
@@ -2810,10 +3386,10 @@ def render_marketplace_coverage() -> None:
         return
 
     _, coverage, _ = cached_comparison_data(int(snapshot["snapshot_id"]))
-    st.dataframe(
-        format_simple_table(coverage, {"Total cost": lambda value: "N/A" if pd.isna(value) else f"${value:,.2f}"}),
-        use_container_width=True,
-        hide_index=True,
+    render_secondary_table(
+        coverage,
+        "marketplace_coverage",
+        {"Total cost": lambda value: "N/A" if pd.isna(value) else f"${value:,.2f}"},
     )
 
 
