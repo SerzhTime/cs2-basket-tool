@@ -21,6 +21,7 @@ jobs:
       MARKETCSGO_API_KEY: ${{ secrets.MARKETCSGO_API_KEY }}
       SKINPORT_CLIENT_ID: ${{ secrets.SKINPORT_CLIENT_ID }}
       SKINPORT_CLIENT_SECRET: ${{ secrets.SKINPORT_CLIENT_SECRET }}
+      SKINDECK_API_KEY: ${{ secrets.SKINDECK_API_KEY }}
       WAXPEER_API_KEY: ${{ secrets.WAXPEER_API_KEY }}
       CSGOSKINS_FETCH_MODE: reader
       CSGOSKINS_READER_URL_TEMPLATE: https://r.jina.ai/http://{url}

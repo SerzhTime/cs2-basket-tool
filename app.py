@@ -933,7 +933,7 @@ def main() -> None:
         }
         .comparison-html-table tr.sum-row td.halo-total,
         .comparison-html-table tr.repeat-header-row td.halo-total {
-            background: rgba(255, 138, 31, 0.24);
+            background: rgba(255, 138, 31, 0.88);
             color: #ffffff;
         }
         .tool-instructions {
@@ -1376,8 +1376,8 @@ def main() -> None:
             line-height: 1.2;
         }
         .comparison-footer-table td.halo-total {
-            background: rgba(255, 243, 191, 0.92) !important;
-            color: #111827;
+            background: rgba(255, 138, 31, 0.88) !important;
+            color: #ffffff;
         }
         html body .stApp .st-key-active_page button,
         html body .stApp .st-key-active_page button *,
@@ -2858,6 +2858,7 @@ def collect_snapshot() -> tuple[int, str, float]:
             f"({success_rate:.0%}) were received. Previous successful data is still displayed."
         )
 
+    all_results = db.carry_forward_recent_prices(all_results)
     recordable_results, skipped_marketplaces = filter_recordable_marketplaces(all_results, len(items))
     if not recordable_results:
         raise SnapshotQualityError(

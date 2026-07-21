@@ -5,7 +5,7 @@ import os
 import json
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Any
 
@@ -574,6 +574,7 @@ def comparison_inputs_for_snapshot(snapshot_id: int) -> tuple[list[sqlite3.Row],
                 (snapshot_id,),
             ).fetchall()
         )
+        points = _overlay_recent_successful_prices(con, snapshot_id, points)
         marketplaces = list(
             con.execute(
                 f"""
@@ -584,6 +585,114 @@ def comparison_inputs_for_snapshot(snapshot_id: int) -> tuple[list[sqlite3.Row],
             ).fetchall()
         )
     return items, points, marketplaces
+
+
+def _overlay_recent_successful_prices(
+    con: DbConnection,
+    snapshot_id: int,
+    points: list[sqlite3.Row],
+    max_age_hours: int = 24,
+) -> list[dict[str, Any]]:
+    snapshot = con.execute(
+        "SELECT timestamp FROM snapshots WHERE snapshot_id = ?",
+        (snapshot_id,),
+    ).fetchone()
+    if not snapshot:
+        return [dict(point) for point in points]
+
+    target_at = datetime.fromisoformat(str(snapshot["timestamp"]).replace("Z", "+00:00"))
+    cutoff = (target_at - timedelta(hours=max_age_hours)).isoformat()
+    output = [dict(point) for point in points]
+    index = {
+        (point["marketplace"], point["market_hash_name"]): position
+        for position, point in enumerate(output)
+    }
+    successful = con.execute(
+        """
+        SELECT pp.marketplace, pp.market_hash_name, pp.normalized_price
+        FROM price_points pp
+        JOIN snapshots s ON s.snapshot_id = pp.snapshot_id
+        WHERE s.timestamp < ?
+          AND s.timestamp >= ?
+          AND pp.fetch_status = 'ok'
+          AND pp.normalized_price IS NOT NULL
+        ORDER BY s.timestamp DESC, pp.price_point_id DESC
+        """,
+        (snapshot["timestamp"], cutoff),
+    ).fetchall()
+    seen: set[tuple[str, str]] = set()
+    for row in successful:
+        key = (row["marketplace"], row["market_hash_name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        carried = {
+            "marketplace": row["marketplace"],
+            "market_hash_name": row["market_hash_name"],
+            "fetch_status": "ok",
+            "normalized_price": row["normalized_price"],
+        }
+        position = index.get(key)
+        if position is None:
+            index[key] = len(output)
+            output.append(carried)
+        elif output[position].get("fetch_status") != "ok" or output[position].get("normalized_price") is None:
+            output[position] = carried
+    return output
+
+
+def carry_forward_recent_prices(
+    results: Iterable[PriceResult],
+    max_age_hours: int = 24,
+) -> list[PriceResult]:
+    output = list(results)
+    if not output:
+        return output
+
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=max_age_hours)).isoformat()
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT pp.marketplace, pp.market_hash_name, pp.normalized_price, s.timestamp
+            FROM price_points pp
+            JOIN snapshots s ON s.snapshot_id = pp.snapshot_id
+            WHERE s.timestamp >= ?
+              AND pp.fetch_status = 'ok'
+              AND pp.normalized_price IS NOT NULL
+            ORDER BY s.timestamp DESC, pp.price_point_id DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+
+    latest: dict[tuple[str, str], tuple[float, str]] = {}
+    for row in rows:
+        key = (row["marketplace"], row["market_hash_name"])
+        latest.setdefault(key, (float(row["normalized_price"]), str(row["timestamp"])))
+
+    carried: list[PriceResult] = []
+    for result in output:
+        normalized = normalize_to_usd(result.price, result.currency)
+        if result.fetch_status == "ok" and normalized is not None:
+            carried.append(result)
+            continue
+        previous = latest.get((result.marketplace, result.market_hash_name))
+        if previous is None:
+            carried.append(result)
+            continue
+        price, timestamp = previous
+        carried.append(
+            PriceResult(
+                marketplace=result.marketplace,
+                market_hash_name=result.market_hash_name,
+                price=price,
+                currency="USD",
+                stock_count=result.stock_count,
+                fetch_status="ok",
+                error_details=f"Last successful price carried forward from {timestamp} (24-hour limit).",
+            )
+        )
+    return carried
 
 
 def get_enabled_adapter_keys() -> list[str]:
