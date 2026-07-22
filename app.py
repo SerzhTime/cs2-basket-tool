@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timedelta, timezone
 from html import escape
+import importlib
 import json
 import os
 import re
@@ -780,6 +781,10 @@ def main() -> None:
         @media (max-width: 1100px) {
             .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
+        .comparison-scroll-shell {
+            position: relative;
+            width: 100%;
+        }
         .comparison-table-scroll {
             background: transparent;
             border: 1px solid #ff8a1f;
@@ -787,23 +792,49 @@ def main() -> None:
             max-height: 820px;
             overflow: auto;
             width: 100%;
-            scrollbar-color: #ff8a1f rgba(255, 255, 255, 0.16);
-            scrollbar-width: auto;
+            scrollbar-width: none;
         }
-        .comparison-table-scroll::-webkit-scrollbar,
-        .comparison-footer-scroll::-webkit-scrollbar { height: 14px; width: 14px; }
-        .comparison-table-scroll::-webkit-scrollbar-track,
-        .comparison-footer-scroll::-webkit-scrollbar-track {
-            background: rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
+        .comparison-table-scroll::-webkit-scrollbar { display: none; }
+        .comparison-overlay-scrollbar {
+            opacity: 0;
+            pointer-events: none;
+            position: absolute;
+            transition: opacity 120ms ease;
+            z-index: 12;
         }
-        .comparison-table-scroll::-webkit-scrollbar-thumb,
-        .comparison-footer-scroll::-webkit-scrollbar-thumb {
-            background: #ff8a1f;
-            border: 3px solid rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
+        .comparison-scroll-shell:hover .comparison-overlay-scrollbar.active,
+        .comparison-overlay-scrollbar.dragging {
+            opacity: 1;
+            pointer-events: auto;
         }
-        .comparison-table-scroll.fullscreen-table {
+        .comparison-overlay-scrollbar.vertical {
+            bottom: 3px;
+            right: 3px;
+            top: 3px;
+            width: 8px;
+        }
+        .comparison-overlay-scrollbar.horizontal {
+            bottom: 3px;
+            height: 8px;
+            left: 3px;
+            right: 3px;
+        }
+        .comparison-overlay-thumb {
+            background: rgba(156, 163, 175, 0.72);
+            border-radius: 999px;
+            left: 0;
+            position: absolute;
+            top: 0;
+        }
+        .comparison-overlay-scrollbar.vertical .comparison-overlay-thumb {
+            min-height: 28px;
+            width: 100%;
+        }
+        .comparison-overlay-scrollbar.horizontal .comparison-overlay-thumb {
+            height: 100%;
+            min-width: 28px;
+        }
+        .comparison-scroll-shell.fullscreen-table {
             background: #020817;
             border-radius: 8px;
             box-shadow: 0 18px 60px rgba(15, 23, 42, 0.24);
@@ -815,6 +846,10 @@ def main() -> None:
             top: 130px;
             width: auto;
             z-index: 999999;
+        }
+        .comparison-scroll-shell.fullscreen-table .comparison-table-scroll {
+            height: 100%;
+            max-height: none;
         }
         .comparison-html-table {
             border-collapse: collapse;
@@ -959,8 +994,8 @@ def main() -> None:
             overflow-y: hidden;
             width: 100%;
             margin-top: -0.15rem;
-            scrollbar-color: #ff8a1f rgba(255, 255, 255, 0.16);
-            scrollbar-width: auto;
+            scrollbar-color: transparent transparent;
+            scrollbar-width: thin;
         }
         html body .stApp [data-testid="stPlotlyChart"] {
             background: transparent !important;
@@ -1292,6 +1327,8 @@ def main() -> None:
         .st-key-adapter_status,
         .st-key-marketplace_coverage,
         .st-key-performance_diagnostics {
+            overflow: overlay !important;
+            scrollbar-gutter: auto !important;
             scrollbar-width: thin !important;
             scrollbar-color: rgba(156, 163, 175, 0.72) transparent !important;
         }
@@ -1486,10 +1523,64 @@ def main() -> None:
             font-size: 14px !important;
             line-height: 1.2 !important;
         }
+        .cs2dt-readonly-overlay-host {
+            position: relative !important;
+            overflow: hidden !important;
+        }
+        html body #root .stApp .cs2dt-readonly-overlay-scroller {
+            max-height: 388px !important;
+            overflow: auto !important;
+            scrollbar-width: none !important;
+            -ms-overflow-style: none !important;
+        }
+        html body #root .stApp .cs2dt-readonly-overlay-scroller::-webkit-scrollbar {
+            display: none !important;
+            width: 0 !important;
+            height: 0 !important;
+        }
+        .cs2dt-readonly-scrollbar {
+            position: absolute;
+            z-index: 20;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 120ms ease;
+        }
+        .cs2dt-readonly-overlay-host:hover > .cs2dt-readonly-scrollbar,
+        .cs2dt-readonly-scrollbar.dragging {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .cs2dt-readonly-scrollbar.vertical {
+            top: 3px;
+            right: 3px;
+            bottom: 3px;
+            width: 8px;
+        }
+        .cs2dt-readonly-scrollbar.horizontal {
+            left: 3px;
+            right: 3px;
+            bottom: 3px;
+            height: 8px;
+        }
+        .cs2dt-readonly-scrollbar .thumb {
+            position: absolute;
+            border-radius: 8px;
+            background: rgba(156, 163, 175, 0.76);
+            cursor: pointer;
+        }
+        .cs2dt-readonly-scrollbar.vertical .thumb {
+            width: 100%;
+            min-height: 28px;
+        }
+        .cs2dt-readonly-scrollbar.horizontal .thumb {
+            height: 100%;
+            min-width: 28px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+    render_readonly_table_scrollbars()
 
     started = time.perf_counter()
     initialize_database()
@@ -1928,6 +2019,7 @@ def render_current_comparison() -> None:
                 table_html,
                 unsafe_allow_html=True,
             )
+            render_comparison_scrollbar_decorator()
             if (
                 mode == "all"
                 and not st.session_state.show_difference_only
@@ -1973,7 +2065,7 @@ def render_fullscreen_table_css() -> None:
             z-index: 2147483000;
         }
         @media (max-width: 1400px) {
-            .comparison-table-scroll.fullscreen-table {
+            .comparison-scroll-shell.fullscreen-table {
                 max-height: calc(100vh - 164px);
                 top: 146px;
             }
@@ -2693,10 +2785,210 @@ def render_comparison_table_html(
             )
         rows.append(f'<tr class="{row_class}">{"".join(cells)}</tr>')
     return (
-        f'<div class="comparison-table-scroll{" fullscreen-table" if fullscreen else ""}">'
+        f'<div class="comparison-scroll-shell{" fullscreen-table" if fullscreen else ""}">'
+        f'<div class="comparison-table-scroll">'
         f'<table class="comparison-html-table" style="width: {width_total}px">'
         f"<colgroup>{colgroup}</colgroup><thead><tr>{headers}</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></div>"
+        f'<div class="comparison-overlay-scrollbar vertical"><div class="comparison-overlay-thumb"></div></div>'
+        f'<div class="comparison-overlay-scrollbar horizontal"><div class="comparison-overlay-thumb"></div></div>'
+        f"</div>"
+    )
+
+
+def render_comparison_scrollbar_decorator() -> None:
+    components.html(
+        """
+        <script>
+        (function () {
+          const win = window.parent;
+          const doc = win.document;
+
+          function setup(shell) {
+            if (shell.dataset.overlayScrollReady === "1") return;
+            const scroller = shell.querySelector(".comparison-table-scroll");
+            const vertical = shell.querySelector(".comparison-overlay-scrollbar.vertical");
+            const horizontal = shell.querySelector(".comparison-overlay-scrollbar.horizontal");
+            if (!scroller || !vertical || !horizontal) return;
+            shell.dataset.overlayScrollReady = "1";
+            const vThumb = vertical.firstElementChild;
+            const hThumb = horizontal.firstElementChild;
+
+            function update() {
+              const vOverflow = scroller.scrollHeight - scroller.clientHeight;
+              const hOverflow = scroller.scrollWidth - scroller.clientWidth;
+              vertical.classList.toggle("active", vOverflow > 1);
+              horizontal.classList.toggle("active", hOverflow > 1);
+              if (vOverflow > 1) {
+                const track = vertical.clientHeight;
+                const size = Math.max(28, track * scroller.clientHeight / scroller.scrollHeight);
+                vThumb.style.height = size + "px";
+                vThumb.style.transform = `translateY(${(track - size) * scroller.scrollTop / vOverflow}px)`;
+              }
+              if (hOverflow > 1) {
+                const track = horizontal.clientWidth;
+                const size = Math.max(28, track * scroller.clientWidth / scroller.scrollWidth);
+                hThumb.style.width = size + "px";
+                hThumb.style.transform = `translateX(${(track - size) * scroller.scrollLeft / hOverflow}px)`;
+              }
+            }
+
+            function makeDraggable(track, thumb, axis) {
+              thumb.addEventListener("pointerdown", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                track.classList.add("dragging");
+                thumb.setPointerCapture(event.pointerId);
+                const startPointer = axis === "x" ? event.clientX : event.clientY;
+                const startScroll = axis === "x" ? scroller.scrollLeft : scroller.scrollTop;
+                const trackSize = axis === "x" ? track.clientWidth : track.clientHeight;
+                const thumbSize = axis === "x" ? thumb.offsetWidth : thumb.offsetHeight;
+                const scrollRange = axis === "x"
+                  ? scroller.scrollWidth - scroller.clientWidth
+                  : scroller.scrollHeight - scroller.clientHeight;
+                const move = (moveEvent) => {
+                  const pointer = axis === "x" ? moveEvent.clientX : moveEvent.clientY;
+                  const next = startScroll + (pointer - startPointer) * scrollRange / Math.max(1, trackSize - thumbSize);
+                  if (axis === "x") scroller.scrollLeft = next;
+                  else scroller.scrollTop = next;
+                };
+                const finish = () => {
+                  track.classList.remove("dragging");
+                  win.removeEventListener("pointermove", move);
+                  win.removeEventListener("pointerup", finish);
+                  win.removeEventListener("pointercancel", finish);
+                };
+                win.addEventListener("pointermove", move);
+                win.addEventListener("pointerup", finish);
+                win.addEventListener("pointercancel", finish);
+              });
+            }
+
+            scroller.addEventListener("scroll", update, { passive: true });
+            makeDraggable(vertical, vThumb, "y");
+            makeDraggable(horizontal, hThumb, "x");
+            if (win.ResizeObserver) new win.ResizeObserver(update).observe(scroller);
+            update();
+          }
+
+          doc.querySelectorAll(".comparison-scroll-shell").forEach(setup);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_readonly_table_scrollbars() -> None:
+    components.html(
+        """
+        <script>
+        (function () {
+          const win = window.parent;
+          const doc = win.document;
+          const selector = [
+            ".st-key-history_timestamp_table",
+            ".st-key-update_run_log",
+            ".st-key-last_update_item_status",
+            ".st-key-adapter_status",
+            ".st-key-marketplace_coverage",
+            ".st-key-performance_diagnostics"
+          ].join(",");
+
+          function setup(host) {
+            const scroller = host.querySelector('[data-testid="stTable"] > div');
+            if (!scroller) return;
+            if (host.dataset.readonlyOverlayReady === "true" && host._readonlyScroller === scroller) {
+              host._readonlyOverlayUpdate?.();
+              return;
+            }
+
+            host.querySelectorAll(":scope > .cs2dt-readonly-scrollbar").forEach((bar) => bar.remove());
+            host.classList.add("cs2dt-readonly-overlay-host");
+            scroller.classList.add("cs2dt-readonly-overlay-scroller");
+
+            const vertical = doc.createElement("div");
+            vertical.className = "cs2dt-readonly-scrollbar vertical";
+            vertical.innerHTML = '<div class="thumb"></div>';
+            const horizontal = doc.createElement("div");
+            horizontal.className = "cs2dt-readonly-scrollbar horizontal";
+            horizontal.innerHTML = '<div class="thumb"></div>';
+            host.append(vertical, horizontal);
+
+            const verticalThumb = vertical.firstElementChild;
+            const horizontalThumb = horizontal.firstElementChild;
+
+            function update() {
+              const verticalOverflow = scroller.scrollHeight - scroller.clientHeight;
+              const horizontalOverflow = scroller.scrollWidth - scroller.clientWidth;
+              vertical.style.display = verticalOverflow > 1 ? "block" : "none";
+              horizontal.style.display = horizontalOverflow > 1 ? "block" : "none";
+
+              if (verticalOverflow > 1) {
+                const trackSize = vertical.clientHeight;
+                const thumbSize = Math.max(28, trackSize * scroller.clientHeight / scroller.scrollHeight);
+                verticalThumb.style.height = `${thumbSize}px`;
+                verticalThumb.style.transform = `translateY(${(trackSize - thumbSize) * scroller.scrollTop / verticalOverflow}px)`;
+              }
+              if (horizontalOverflow > 1) {
+                const trackSize = horizontal.clientWidth;
+                const thumbSize = Math.max(28, trackSize * scroller.clientWidth / scroller.scrollWidth);
+                horizontalThumb.style.width = `${thumbSize}px`;
+                horizontalThumb.style.transform = `translateX(${(trackSize - thumbSize) * scroller.scrollLeft / horizontalOverflow}px)`;
+              }
+            }
+
+            function bindDrag(track, thumb, axis) {
+              thumb.addEventListener("pointerdown", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                track.classList.add("dragging");
+                const startPointer = axis === "x" ? event.clientX : event.clientY;
+                const startScroll = axis === "x" ? scroller.scrollLeft : scroller.scrollTop;
+                const trackSize = axis === "x" ? track.clientWidth : track.clientHeight;
+                const thumbSize = axis === "x" ? thumb.offsetWidth : thumb.offsetHeight;
+                const scrollRange = axis === "x"
+                  ? scroller.scrollWidth - scroller.clientWidth
+                  : scroller.scrollHeight - scroller.clientHeight;
+
+                function move(moveEvent) {
+                  const pointer = axis === "x" ? moveEvent.clientX : moveEvent.clientY;
+                  const next = startScroll + (pointer - startPointer) * scrollRange / Math.max(1, trackSize - thumbSize);
+                  if (axis === "x") scroller.scrollLeft = next;
+                  else scroller.scrollTop = next;
+                }
+                function finish() {
+                  track.classList.remove("dragging");
+                  win.removeEventListener("pointermove", move);
+                  win.removeEventListener("pointerup", finish);
+                  win.removeEventListener("pointercancel", finish);
+                }
+                win.addEventListener("pointermove", move);
+                win.addEventListener("pointerup", finish);
+                win.addEventListener("pointercancel", finish);
+              });
+            }
+
+            scroller.addEventListener("scroll", update, { passive: true });
+            bindDrag(vertical, verticalThumb, "y");
+            bindDrag(horizontal, horizontalThumb, "x");
+            if (win.ResizeObserver) new win.ResizeObserver(update).observe(scroller);
+            host.dataset.readonlyOverlayReady = "true";
+            host._readonlyScroller = scroller;
+            host._readonlyOverlayUpdate = update;
+            update();
+          }
+
+          function setupAll() {
+            doc.querySelectorAll(selector).forEach(setup);
+          }
+
+          setupAll();
+          new win.MutationObserver(setupAll).observe(doc.body, { childList: true, subtree: true });
+        })();
+        </script>
+        """,
+        height=0,
     )
 
 
@@ -2858,7 +3150,13 @@ def collect_snapshot() -> tuple[int, str, float]:
             f"({success_rate:.0%}) were received. Previous successful data is still displayed."
         )
 
-    all_results = db.carry_forward_recent_prices(all_results)
+    carry_forward = getattr(db, "carry_forward_recent_prices", None)
+    if carry_forward is None:
+        # Streamlit can reload this script while retaining an older imported
+        # db module when both files changed in the same update.
+        importlib.invalidate_caches()
+        carry_forward = getattr(importlib.reload(db), "carry_forward_recent_prices")
+    all_results = carry_forward(all_results)
     recordable_results, skipped_marketplaces = filter_recordable_marketplaces(all_results, len(items))
     if not recordable_results:
         raise SnapshotQualityError(
