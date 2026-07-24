@@ -24,7 +24,6 @@ CSGOSKINS_MARKETS = [
     ("csgoskins_exeskins", "Exeskins", ["Exeskins"]),
     ("csgoskins_avan_market", "Avan.market", ["Avan.market"]),
     ("csgoskins_skinvault", "Skinvault", ["Skinvault"]),
-    ("csgoskins_uuskins", "UUSKINS", ["UUSKINS"]),
     ("csgoskins_tradeit", "Tradeit.gg", ["Tradeit.gg"]),
     ("csgoskins_skinplace", "SkinPlace", ["SkinPlace", "Skin.Place"]),
     ("csgoskins_shadowpay", "ShadowPay", ["ShadowPay"]),

@@ -380,6 +380,7 @@ def seed_marketplaces() -> None:
         "dmarket",
         "marketcsgo",
         "skindeck",
+        "uuskins",
         "openskin_skinport",
         "openskin_buff163",
         "openskin_youpin",
@@ -393,7 +394,6 @@ def seed_marketplaces() -> None:
         "csgoskins_exeskins",
         "csgoskins_avan_market",
         "csgoskins_skinvault",
-        "csgoskins_uuskins",
         "csgoskins_tradeit",
         "csgoskins_skinplace",
         "csgoskins_shadowpay",
@@ -401,6 +401,7 @@ def seed_marketplaces() -> None:
     }
     now = utc_now_iso()
     with connect() as con:
+        con.execute("DELETE FROM marketplaces WHERE adapter_key = ?", ("csgoskins_uuskins",))
         for key, adapter in registry.items():
             con.execute(
                 """

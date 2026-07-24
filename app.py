@@ -89,6 +89,7 @@ API_REPAIR_MARKETPLACES = {
     "Market.CSGO",
     "Skindeck",
     "Skinport",
+    "UUSKINS",
     "Buff163",
     "YouPin",
     "Steam",

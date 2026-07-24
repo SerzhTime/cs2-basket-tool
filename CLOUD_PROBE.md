@@ -26,6 +26,8 @@ Local results show your current network behavior. They are useful as a baseline,
    - `DMARKET_SECRET_KEY`
    - `MARKETCSGO_API_KEY`
    - `WAXPEER_API_KEY`
+   - `UUSKINS_APP_KEY`
+   - `UUSKINS_PRIVATE_KEY`
 4. Open `Actions -> Cloud IP Probe -> Run workflow`.
 5. Download the `cloud-probe-report` artifact after the run.
 
