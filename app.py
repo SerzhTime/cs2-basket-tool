@@ -431,7 +431,7 @@ def main() -> None:
             height: 0.5rem;
         }
         .app-sticky-header-spacer {
-            height: 3rem;
+            height: 0.6rem;
         }
         @media (max-width: 900px) {
             div[data-testid="stLayoutWrapper"]:has(> .st-key-app_sticky_header) {
@@ -581,8 +581,8 @@ def main() -> None:
         }
         .repair-caption {
             color: #f8fafc;
-            font-size: 0.88rem;
-            line-height: 1.45;
+            font-size: 0.9rem;
+            line-height: 1.5;
             margin: -0.2rem 0 0.75rem 0;
         }
         .comparison-title {
@@ -872,16 +872,34 @@ def main() -> None:
             white-space: nowrap;
         }
         .comparison-html-table th {
-            background: rgba(28, 32, 41, 0.98);
-            color: #a8b0bd;
+            background: #000000;
+            color: #ffffff;
             font-weight: 500;
             position: sticky;
             top: 0;
             z-index: 4;
         }
         .comparison-html-table th.halo-total {
-            background: rgba(255, 138, 31, 0.24);
+            background: rgba(255, 138, 31, 0.88);
             color: #ffffff;
+        }
+        .comparison-html-table th:first-child,
+        .comparison-html-table td:first-child {
+            left: 0;
+            position: sticky;
+        }
+        .comparison-html-table th:first-child {
+            background: #000000;
+            z-index: 7;
+        }
+        .comparison-html-table tr.item-row td:first-child {
+            background: #020817;
+            z-index: 3;
+        }
+        .comparison-html-table tr.sum-row td:first-child,
+        .comparison-html-table tr.repeat-header-row td:first-child {
+            background: #000000;
+            z-index: 7;
         }
         .market-header {
             align-items: center;
@@ -973,7 +991,7 @@ def main() -> None:
         }
         .tool-instructions {
             margin-top: -1.25rem;
-            padding: 0 1rem 0.25rem 1rem;
+            padding: 0 0 0.25rem 0;
         }
         .tool-instructions h3 {
             font-size: 1rem;
@@ -984,7 +1002,9 @@ def main() -> None:
         }
         .tool-instructions p,
         .tool-instructions li {
-            line-height: 1.55;
+            color: #f8fafc;
+            font-size: 0.9rem;
+            line-height: 1.5;
         }
         .comparison-footer-scroll {
             background: transparent;
