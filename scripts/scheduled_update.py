@@ -10,7 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import db  # noqa: E402
-from app import SnapshotQualityError, collect_snapshot, sync_basket_file  # noqa: E402
+from app import (  # noqa: E402
+    SnapshotQualityError,
+    collect_snapshot,
+    latest_update_step_details,
+    sync_basket_file,
+)
 
 
 def main() -> int:
@@ -29,6 +34,7 @@ def main() -> int:
             duration_seconds=time.perf_counter() - started_timer,
             status="error",
             error_details=str(exc),
+            step_details=latest_update_step_details(),
         )
         print(str(exc))
         return 2
@@ -40,6 +46,7 @@ def main() -> int:
             duration_seconds=time.perf_counter() - started_timer,
             status="error",
             error_details=str(exc),
+            step_details=latest_update_step_details(),
         )
         raise
     db.record_update_run(
@@ -50,6 +57,7 @@ def main() -> int:
         status="ok",
         snapshot_id=snapshot_id,
         success_rate=success_rate,
+        step_details=latest_update_step_details(),
     )
     print(
         f"Saved snapshot #{snapshot_id} at {timestamp} "

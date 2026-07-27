@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from html import escape
 import importlib
@@ -401,6 +402,16 @@ def main() -> None:
             margin: -0.15rem 0 0.45rem 0;
             min-height: 1.2rem;
             text-align: left;
+            padding-left: 0.75rem;
+            white-space: nowrap;
+        }
+        .market-update-status {
+            color: #dbeafe;
+            font-size: 0.9rem;
+            line-height: 2rem;
+            min-height: 2rem;
+            overflow: visible;
+            padding-left: 0.75rem;
             white-space: nowrap;
         }
         .header-button-spacer {
@@ -1647,16 +1658,36 @@ def main() -> None:
     with meta_cols[0]:
         render_last_updated_meta()
     with meta_cols[1]:
+        update_status_placeholder = st.empty()
         header_status = None
         if st.session_state.get("neon_sync_running"):
             header_status = "Synchronizing local SQLite and Neon..."
         elif sync_clicked:
             header_status = "Synchronizing local SQLite and Neon..."
         elif update_clicked:
-            header_status = "Fetching enabled marketplace adapters..."
+            header_status = "Skin prices received: 0 of 0."
         elif automatic_neon_sync_busy():
             header_status = "Synchronizing local SQLite and Neon..."
-        render_update_status(header_status)
+        render_update_status(header_status, update_status_placeholder)
+
+    page_cols = st.columns([6.9, 1.05, 0.32], vertical_alignment="top")
+    with page_cols[0]:
+        page = st.segmented_control(
+            "Page",
+            [
+                "Current Basket Comparison",
+                "Historical Graph",
+                "Basket Items",
+                "Settings / Marketplaces",
+            ],
+            default="Current Basket Comparison",
+            key="active_page",
+            label_visibility="collapsed",
+        )
+    with page_cols[1]:
+        market_status_placeholder = st.empty()
+        render_market_update_status(None, market_status_placeholder)
+
     if sync_clicked:
         suppress_pending_automatic_neon_sync()
         perform_neon_sync("manual")
@@ -1664,30 +1695,40 @@ def main() -> None:
     if update_clicked:
         started_at = db.utc_now_iso()
         started_timer = time.perf_counter()
+
+        def show_price_progress(received: int, total: int, market: str = "") -> None:
+            render_update_status(
+                f"Skin prices received: {received:,} of {total:,}.",
+                update_status_placeholder,
+            )
+            render_market_update_status(market, market_status_placeholder)
+
         try:
-            snapshot_id, timestamp, success_rate = collect_snapshot()
+            snapshot_id, timestamp, success_rate = collect_snapshot(show_price_progress)
         except SnapshotQualityError as exc:
-            db.record_update_run(
+            record_update_run_compat(
                 source="manual",
                 started_at=started_at,
                 finished_at=db.utc_now_iso(),
                 duration_seconds=time.perf_counter() - started_timer,
                 status="error",
                 error_details=str(exc),
+                step_details=latest_update_step_details(),
             )
             st.session_state.update_error = str(exc)
         except Exception as exc:
-            db.record_update_run(
+            record_update_run_compat(
                 source="manual",
                 started_at=started_at,
                 finished_at=db.utc_now_iso(),
                 duration_seconds=time.perf_counter() - started_timer,
                 status="error",
                 error_details=str(exc),
+                step_details=latest_update_step_details(),
             )
             raise
         else:
-            db.record_update_run(
+            record_update_run_compat(
                 source="manual",
                 started_at=started_at,
                 finished_at=db.utc_now_iso(),
@@ -1695,6 +1736,7 @@ def main() -> None:
                 status="ok",
                 snapshot_id=snapshot_id,
                 success_rate=success_rate,
+                step_details=latest_update_step_details(),
             )
             st.session_state.update_notice = (
                 f"Saved snapshot #{snapshot_id} at {format_timestamp_utc8(timestamp)} "
@@ -1715,19 +1757,6 @@ def main() -> None:
     if "sync_error" in st.session_state:
         st.error(st.session_state.pop("sync_error"))
     render_pending_neon_sync_timer()
-
-    page = st.segmented_control(
-        "Page",
-        [
-            "Current Basket Comparison",
-            "Historical Graph",
-            "Basket Items",
-            "Settings / Marketplaces",
-        ],
-        default="Current Basket Comparison",
-        key="active_page",
-        label_visibility="collapsed",
-    )
 
     if page == "Current Basket Comparison":
         render_current_comparison()
@@ -1918,10 +1947,20 @@ def render_last_updated_meta(status: str | None = None) -> None:
     )
 
 
-def render_update_status(status: str | None = None) -> None:
+def render_update_status(status: str | None = None, container=None) -> None:
     status_html = escape(status) if status else "&nbsp;"
-    st.markdown(
+    target = st if container is None else container
+    target.markdown(
         f'<div class="header-update-status">{status_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_market_update_status(status: str | None = None, container=None) -> None:
+    status_html = escape(status) if status else "&nbsp;"
+    target = st if container is None else container
+    target.markdown(
+        f'<div class="market-update-status">{status_html}</div>',
         unsafe_allow_html=True,
     )
 
@@ -3127,37 +3166,159 @@ class SnapshotQualityError(RuntimeError):
     pass
 
 
-def collect_snapshot() -> tuple[int, str, float]:
+LAST_UPDATE_STEPS: list[dict] = []
+
+
+def latest_update_step_details() -> str | None:
+    return json.dumps(LAST_UPDATE_STEPS, separators=(",", ":")) if LAST_UPDATE_STEPS else None
+
+
+def record_update_run_compat(**kwargs) -> None:
+    try:
+        db.record_update_run(**kwargs)
+    except TypeError as exc:
+        if "step_details" not in str(exc):
+            raise
+        # Streamlit can retain the previous db module while reloading app.py
+        # after both files change. Reload once so the new schema-aware
+        # function signature is used without requiring an app restart.
+        importlib.invalidate_caches()
+        reloaded_db = importlib.reload(db)
+        reloaded_db.init_db()
+        reloaded_db.record_update_run(**kwargs)
+
+
+def adapter_provider_group(adapter_key: str) -> str:
+    if adapter_key.startswith("csgoskins_"):
+        return "CSGOSKINS"
+    if adapter_key.startswith("openskin_"):
+        return "OpenSkin"
+    return adapter_key
+
+
+def fetch_adapter_group(adapters, items) -> list[dict]:
+    completed: list[dict] = []
+    for adapter in adapters:
+        started = time.perf_counter()
+        try:
+            results = adapter.fetch_prices(items)
+        except Exception as exc:
+            results = [
+                PriceResult(
+                    marketplace=adapter.name,
+                    market_hash_name=item.market_hash_name,
+                    price=None,
+                    currency="USD",
+                    fetch_status="error",
+                    error_details=str(exc),
+                )
+                for item in items
+            ]
+        completed.append(
+            {
+                "adapter": adapter,
+                "results": results,
+                "duration_seconds": time.perf_counter() - started,
+            }
+        )
+    return completed
+
+
+def collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
+    global LAST_UPDATE_STEPS
+    LAST_UPDATE_STEPS = []
     registry = build_adapter_registry()
     clear_backup_cache()
     clear_csgoskins_cache()
     enabled_keys = db.get_enabled_adapter_keys()
     items = db.get_adapter_items()
     all_results: list[PriceResult] = []
-    adapters = [registry[key] for key in enabled_keys if key in registry]
+    enabled_adapters = [(key, registry[key]) for key in enabled_keys if key in registry]
+    adapters = [adapter for _, adapter in enabled_adapters]
     expected_count = len(items) * len(adapters)
     if expected_count == 0:
         raise SnapshotQualityError("No active basket items or enabled marketplaces are available to update.")
 
-    for adapter in adapters:
-        try:
-            all_results.extend(adapter.fetch_prices(items))
-        except Exception as exc:
-            all_results.extend(
-                [
-                    PriceResult(
-                        marketplace=adapter.name,
-                        market_hash_name=item.market_hash_name,
-                        price=None,
-                        currency="USD",
-                        fetch_status="error",
-                        error_details=str(exc),
-                    )
-                    for item in items
-                ]
-            )
+    def report_progress(current_market: str = "") -> None:
+        if progress_callback is None:
+            return
+        received_count = sum(
+            1
+            for result in all_results
+            if result.fetch_status == "ok"
+            and db.normalize_to_usd(result.price, result.currency) is not None
+        )
+        progress_callback(received_count, expected_count, current_market)
 
+    def accept_completed_adapter(completed: dict, provider_group: str) -> None:
+        adapter = completed["adapter"]
+        adapter_results = completed["results"]
+        all_results.extend(adapter_results)
+        received = sum(
+            result.fetch_status == "ok" and db.normalize_to_usd(result.price, result.currency) is not None
+            for result in adapter_results
+        )
+        missing = sum(result.fetch_status == "missing" for result in adapter_results)
+        errors = len(adapter_results) - received - missing
+        LAST_UPDATE_STEPS.append(
+            {
+                "step": adapter.name,
+                "received": received,
+                "missing": missing,
+                "errors": errors,
+                "duration_seconds": round(completed["duration_seconds"], 3),
+                "provider_group": provider_group,
+            }
+        )
+        report_progress(f"Completed {adapter.name}")
+        # Give Streamlit a brief opportunity to flush each marketplace update.
+        if progress_callback is not None:
+            time.sleep(0.03)
+
+    report_progress("Updating HaloSkins baseline")
+    baseline_entries = [entry for entry in enabled_adapters if entry[1].name == BASELINE_MARKETPLACE]
+    remaining_entries = [entry for entry in enabled_adapters if entry[1].name != BASELINE_MARKETPLACE]
+    for completed in fetch_adapter_group([adapter for _, adapter in baseline_entries], items):
+        accept_completed_adapter(completed, "Baseline")
+
+    grouped_adapters: dict[str, list] = {}
+    for key, adapter in remaining_entries:
+        grouped_adapters.setdefault(adapter_provider_group(key), []).append(adapter)
+
+    report_progress(f"Updating {len(grouped_adapters)} provider groups in parallel")
+    worker_count = min(4, max(1, len(grouped_adapters)))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="price-provider") as executor:
+        futures = {
+            executor.submit(fetch_adapter_group, group_adapters, items): group_name
+            for group_name, group_adapters in grouped_adapters.items()
+        }
+        for future in as_completed(futures):
+            group_name = futures[future]
+            for completed in future.result():
+                accept_completed_adapter(completed, group_name)
+
+    report_progress("Applying fallback prices")
+    backup_started = time.perf_counter()
+    before_backup = sum(
+        result.fetch_status == "ok" and db.normalize_to_usd(result.price, result.currency) is not None
+        for result in all_results
+    )
     all_results = apply_backup_prices(all_results, items)
+    after_backup = sum(
+        result.fetch_status == "ok" and db.normalize_to_usd(result.price, result.currency) is not None
+        for result in all_results
+    )
+    LAST_UPDATE_STEPS.append(
+        {
+            "step": "Fallback recovery",
+            "received": after_backup - before_backup,
+            "missing": None,
+            "errors": None,
+            "duration_seconds": round(time.perf_counter() - backup_started, 3),
+            "provider_group": "Fallback",
+        }
+    )
+    report_progress("Fallback recovery completed")
 
     success_count = sum(
         1
@@ -3390,34 +3551,61 @@ def render_update_runs_table() -> None:
     if not rows:
         st.caption("No manual or automatic update runs recorded yet.")
         return
-    table_df = pd.DataFrame(rows)
-    table_df["started_at"] = to_utc8_datetime_series(table_df["started_at"]).dt.strftime("%Y-%m-%d %H:%M:%S UTC+8")
-    table_df["finished_at"] = to_utc8_datetime_series(table_df["finished_at"]).dt.strftime("%Y-%m-%d %H:%M:%S UTC+8")
-    table_df["duration"] = table_df["duration_seconds"].map(format_duration_seconds)
-    table_df["success_rate"] = table_df["success_rate"].map(
-        lambda value: "" if pd.isna(value) else f"{float(value):.0%}"
-    )
-    table_df = table_df[
-        [
-            "started_at",
-            "finished_at",
-            "source",
-            "duration",
-            "status",
-            "snapshot_id",
-            "success_rate",
-            "error_details",
-        ]
-    ].rename(
-        columns={
-            "started_at": "started",
-            "finished_at": "finished",
-            "snapshot_id": "snapshot",
-            "success_rate": "data received",
-            "error_details": "error",
+    detail_rows: list[dict] = []
+    for run_index, row in enumerate(rows):
+        started = format_timestamp_utc8(row["started_at"])
+        finished = format_timestamp_utc8(row["finished_at"])
+        common = {
+            "started": started,
+            "finished": finished,
+            "source": row["source"],
+            "status": row["status"],
+            "snapshot": row["snapshot_id"],
+            "data received": "" if row["success_rate"] is None else f"{float(row['success_rate']):.0%}",
+            "error": row["error_details"],
         }
-    )
+        # Keep recent runs fully detailed without making the historical page
+        # render thousands of marketplace rows after months of updates.
+        steps = parse_update_steps(row.get("step_details")) if run_index < 10 else []
+        if not steps:
+            detail_rows.append(
+                {
+                    **common,
+                    "provider": "",
+                    "step": "Run summary",
+                    "duration": format_duration_seconds(row["duration_seconds"]),
+                    "received": "",
+                    "missing": "",
+                    "errors": "",
+                }
+            )
+            continue
+        for step in steps:
+            detail_rows.append(
+                {
+                    **common,
+                    "step": step.get("step", "Update step"),
+                    "provider": step.get("provider_group", ""),
+                    "duration": format_duration_seconds(step.get("duration_seconds")),
+                    "received": step.get("received", ""),
+                    "missing": step.get("missing", ""),
+                    "errors": step.get("errors", ""),
+                }
+            )
+    table_df = pd.DataFrame(detail_rows)[
+        ["started", "source", "provider", "step", "duration", "received", "missing", "errors", "status", "snapshot", "data received", "error"]
+    ]
     render_secondary_table(table_df, "update_run_log")
+
+
+def parse_update_steps(value) -> list[dict]:
+    if not value or pd.isna(value):
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return [{"step": str(value)}]
+    return parsed if isinstance(parsed, list) else []
 
 
 def format_duration_seconds(value: object) -> str:

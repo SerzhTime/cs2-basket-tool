@@ -150,6 +150,7 @@ def init_db() -> None:
         ensure_column(con, "basket_items", "priceempire_url", "TEXT")
         ensure_column(con, "basket_items", "steamanalyst_url", "TEXT")
         ensure_column(con, "basket_items", "marketplace_links_json", "TEXT")
+        ensure_column(con, "update_runs", "step_details", "TEXT")
         remove_mock_marketplaces(con)
         prune_low_quality_snapshots(con, MIN_SNAPSHOT_SUCCESS_RATE)
     seed_marketplaces()
@@ -230,7 +231,8 @@ def _schema_sql(backend: str | None = None) -> str:
                 status TEXT NOT NULL,
                 snapshot_id INTEGER,
                 success_rate DOUBLE PRECISION,
-                error_details TEXT
+                error_details TEXT,
+                step_details TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_update_runs_started_at
@@ -319,7 +321,8 @@ def _schema_sql(backend: str | None = None) -> str:
             status TEXT NOT NULL,
             snapshot_id INTEGER,
             success_rate REAL,
-            error_details TEXT
+            error_details TEXT,
+            step_details TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_update_runs_started_at
@@ -726,11 +729,25 @@ def update_marketplace_settings(rows: Iterable[dict]) -> None:
 
 
 def save_snapshot_results(results: Iterable[PriceResult]) -> tuple[int, str]:
+    result_rows = list(results)
+    for attempt in range(3):
+        try:
+            return _save_snapshot_results_once(result_rows)
+        except Exception as exc:
+            if not using_postgres() or not _is_deadlock_error(exc) or attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+
+    raise RuntimeError("Snapshot save failed.")
+
+
+def _save_snapshot_results_once(results: list[PriceResult]) -> tuple[int, str]:
     timestamp = utc_now_iso()
     item_map = {row["market_hash_name"]: int(row["item_id"]) for row in get_basket_items()}
     status_by_marketplace: dict[str, list[tuple[str, str | None]]] = {}
     with connect() as con:
         if using_postgres():
+            _acquire_postgres_sync_lock(con)
             cur = con.execute("INSERT INTO snapshots(timestamp) VALUES (?) RETURNING snapshot_id", (timestamp,))
             snapshot_id = int(cur.fetchone()["snapshot_id"])
         else:
@@ -811,6 +828,7 @@ def record_update_run(
     snapshot_id: int | None = None,
     success_rate: float | None = None,
     error_details: str | None = None,
+    step_details: str | None = None,
 ) -> None:
     safe_source = source if source in {"manual", "automatic", "sync"} else "manual"
     with connect() as con:
@@ -818,9 +836,9 @@ def record_update_run(
             """
             INSERT INTO update_runs (
                 source, started_at, finished_at, duration_seconds, status,
-                snapshot_id, success_rate, error_details
+                snapshot_id, success_rate, error_details, step_details
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 safe_source,
@@ -831,6 +849,7 @@ def record_update_run(
                 snapshot_id,
                 success_rate,
                 _none_if_blank(error_details),
+                _none_if_blank(step_details),
             ),
         )
 
@@ -841,7 +860,7 @@ def update_runs(limit: int = 200) -> list[sqlite3.Row]:
             con.execute(
                 """
                 SELECT update_run_id, source, started_at, finished_at, duration_seconds,
-                    status, snapshot_id, success_rate, error_details
+                    status, snapshot_id, success_rate, error_details, step_details
                 FROM update_runs
                 ORDER BY started_at DESC, update_run_id DESC
                 LIMIT ?
@@ -1109,8 +1128,9 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
     source.row_factory = sqlite3.Row
     try:
         with connect_postgres() as target:
-            target.executescript(_schema_sql("postgres"))
             _acquire_postgres_sync_lock(target)
+            target.executescript(_schema_sql("postgres"))
+            target.execute("ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS step_details TEXT")
             _sync_basket_items_to_postgres(source, target, counts)
             _sync_marketplaces_to_postgres(source, target, counts)
             _sync_update_runs_to_postgres(source, target, counts)
@@ -1269,7 +1289,8 @@ def _sync_update_runs_to_postgres(source: sqlite3.Connection, target: DbConnecti
                     status = ?,
                     snapshot_id = ?,
                     success_rate = ?,
-                    error_details = ?
+                    error_details = ?,
+                    step_details = ?
                 WHERE update_run_id = ?
                 """,
                 (
@@ -1278,6 +1299,7 @@ def _sync_update_runs_to_postgres(source: sqlite3.Connection, target: DbConnecti
                     _int_or_none(row["snapshot_id"]),
                     _float_or_none(row["success_rate"]),
                     _none_if_blank(row["error_details"]),
+                    _none_if_blank(row["step_details"]),
                     existing["update_run_id"],
                 ),
             )
@@ -1286,9 +1308,9 @@ def _sync_update_runs_to_postgres(source: sqlite3.Connection, target: DbConnecti
                 """
                 INSERT INTO update_runs (
                     source, started_at, finished_at, duration_seconds, status,
-                    snapshot_id, success_rate, error_details
+                    snapshot_id, success_rate, error_details, step_details
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["source"],
@@ -1299,6 +1321,7 @@ def _sync_update_runs_to_postgres(source: sqlite3.Connection, target: DbConnecti
                     _int_or_none(row["snapshot_id"]),
                     _float_or_none(row["success_rate"]),
                     _none_if_blank(row["error_details"]),
+                    _none_if_blank(row["step_details"]),
                 ),
             )
         counts["update_runs"] += 1
@@ -1325,9 +1348,9 @@ def _sync_missing_postgres_update_runs_to_sqlite(
             """
             INSERT INTO update_runs (
                 source, started_at, finished_at, duration_seconds, status,
-                snapshot_id, success_rate, error_details
+                snapshot_id, success_rate, error_details, step_details
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row["source"],
@@ -1338,6 +1361,7 @@ def _sync_missing_postgres_update_runs_to_sqlite(
                 _int_or_none(row["snapshot_id"]),
                 _float_or_none(row["success_rate"]),
                 _none_if_blank(row["error_details"]),
+                _none_if_blank(row["step_details"]),
             ),
         )
         counts["pulled_update_runs"] += 1
