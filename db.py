@@ -171,6 +171,7 @@ def utc_now_iso() -> str:
 def init_db() -> None:
     with connect() as con:
         con.executescript(_schema_sql())
+        ensure_price_point_uniqueness(con)
         ensure_column(con, "basket_items", "multiplier", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(con, "basket_items", "price_compare_url", "TEXT")
         ensure_column(con, "basket_items", "priceempire_url", "TEXT")
@@ -378,6 +379,53 @@ def ensure_column(con: DbConnection, table: str, column: str, definition: str) -
         columns = {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {_pg_column_definition(definition)}")
+
+
+def ensure_price_point_uniqueness(con: DbConnection) -> None:
+    if _price_point_unique_index_exists(con):
+        return
+    con.execute(
+        """
+        DELETE FROM price_points
+        WHERE price_point_id IN (
+            SELECT price_point_id
+            FROM (
+                SELECT
+                    price_point_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY snapshot_id, marketplace, market_hash_name
+                        ORDER BY price_point_id DESC
+                    ) AS duplicate_rank
+                FROM price_points
+            ) ranked
+            WHERE duplicate_rank > 1
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_price_points_snapshot_market_hash
+        ON price_points(snapshot_id, marketplace, market_hash_name)
+        """
+    )
+
+
+def _price_point_unique_index_exists(con: DbConnection) -> bool:
+    if con.backend == "postgres":
+        row = con.execute(
+            """
+            SELECT 1
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND indexname = ?
+            """,
+            ("uq_price_points_snapshot_market_hash",),
+        ).fetchone()
+        return row is not None
+    return any(
+        row["name"] == "uq_price_points_snapshot_market_hash"
+        for row in con.execute("PRAGMA index_list(price_points)").fetchall()
+    )
 
 
 def _pg_column_definition(definition: str) -> str:
@@ -1149,6 +1197,7 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
         "pulled_price_points": 0,
         "update_runs": 0,
         "pulled_update_runs": 0,
+        "replaced_snapshots": 0,
     }
     source = sqlite3.connect(DB_PATH)
     source.row_factory = sqlite3.Row
@@ -1156,6 +1205,7 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
         with connect_postgres() as target:
             _acquire_postgres_sync_lock(target)
             target.executescript(_schema_sql("postgres"))
+            ensure_price_point_uniqueness(target)
             target.execute("ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS step_details TEXT")
             _sync_basket_items_to_postgres(source, target, counts)
             _sync_marketplaces_to_postgres(source, target, counts)
@@ -1166,8 +1216,6 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
             }
             for snapshot in source.execute("SELECT * FROM snapshots ORDER BY timestamp, snapshot_id"):
                 target_snapshot_id, existing_points = _postgres_snapshot_for_timestamp(target, snapshot["timestamp"])
-                if existing_points:
-                    continue
                 batch = []
                 for point in source.execute(
                     "SELECT * FROM price_points WHERE snapshot_id = ? ORDER BY price_point_id",
@@ -1189,6 +1237,13 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
                             point["timestamp"],
                         )
                     )
+                local_keys = {(row[1], row[3]) for row in batch}
+                remote_keys = _snapshot_market_item_keys(target, target_snapshot_id) if existing_points else set()
+                if existing_points and remote_keys == local_keys:
+                    continue
+                if existing_points:
+                    target.execute("DELETE FROM price_points WHERE snapshot_id = ?", (target_snapshot_id,))
+                    counts["replaced_snapshots"] += 1
                 if batch:
                     target.executemany(
                         """
@@ -1473,6 +1528,7 @@ def _postgres_snapshot_for_timestamp(target: DbConnection, timestamp: str) -> tu
         LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
         WHERE s.timestamp = ?
         GROUP BY s.snapshot_id
+        ORDER BY s.snapshot_id DESC
         LIMIT 1
         """,
         (timestamp,),
@@ -1481,6 +1537,20 @@ def _postgres_snapshot_for_timestamp(target: DbConnection, timestamp: str) -> tu
         return int(row["snapshot_id"]), int(row["point_count"] or 0)
     cur = target.execute("INSERT INTO snapshots(timestamp) VALUES (?) RETURNING snapshot_id", (timestamp,))
     return int(cur.fetchone()["snapshot_id"]), 0
+
+
+def _snapshot_market_item_keys(target: DbConnection, snapshot_id: int) -> set[tuple[str, str]]:
+    return {
+        (str(row["marketplace"]), str(row["market_hash_name"]))
+        for row in target.execute(
+            """
+            SELECT marketplace, market_hash_name
+            FROM price_points
+            WHERE snapshot_id = ?
+            """,
+            (snapshot_id,),
+        ).fetchall()
+    }
 
 
 def _none_if_blank(value):

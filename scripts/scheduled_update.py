@@ -10,11 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import db  # noqa: E402
-from app import (  # noqa: E402
+from adapters.base import safe_error_details  # noqa: E402
+from services.basket_service import sync_basket_file  # noqa: E402
+from services.update_service import (  # noqa: E402
     SnapshotQualityError,
     collect_snapshot,
     latest_update_step_details,
-    sync_basket_file,
 )
 
 
@@ -27,25 +28,27 @@ def main() -> int:
     try:
         snapshot_id, timestamp, success_rate = collect_snapshot()
     except SnapshotQualityError as exc:
+        error_details = safe_error_details(exc)
         db.record_update_run(
             source="automatic",
             started_at=started_at,
             finished_at=db.utc_now_iso(),
             duration_seconds=time.perf_counter() - started_timer,
             status="error",
-            error_details=str(exc),
+            error_details=error_details,
             step_details=latest_update_step_details(),
         )
-        print(str(exc))
+        print(error_details)
         return 2
     except Exception as exc:
+        error_details = safe_error_details(exc)
         db.record_update_run(
             source="automatic",
             started_at=started_at,
             finished_at=db.utc_now_iso(),
             duration_seconds=time.perf_counter() - started_timer,
             status="error",
-            error_details=str(exc),
+            error_details=error_details,
             step_details=latest_update_step_details(),
         )
         raise
