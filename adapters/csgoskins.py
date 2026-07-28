@@ -11,7 +11,7 @@ from urllib.parse import quote
 import requests
 from bs4 import BeautifulSoup
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 
 
 CSGOSKINS_MARKETS = [
@@ -89,7 +89,7 @@ class CSGOSKINSMarketplaceAdapter:
                         price=None,
                         currency="USD",
                         fetch_status="error",
-                        error_details=str(exc),
+                        error_details=safe_error_details(exc),
                     )
                 )
                 continue

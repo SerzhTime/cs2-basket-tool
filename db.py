@@ -138,6 +138,32 @@ def connect_postgres():
         wrapped.close()
 
 
+@contextmanager
+def remote_price_update_lock():
+    """Serialize price updates with Neon synchronization across processes."""
+    if not using_postgres():
+        yield True
+        return
+
+    import psycopg
+
+    with psycopg.connect(database_url(), autocommit=True) as con:
+        acquired = bool(
+            con.execute(
+                "SELECT pg_try_advisory_lock(hashtext(%s))",
+                ("cs2dt_neon_sync",),
+            ).fetchone()[0]
+        )
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                con.execute(
+                    "SELECT pg_advisory_unlock(hashtext(%s))",
+                    ("cs2dt_neon_sync",),
+                )
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 

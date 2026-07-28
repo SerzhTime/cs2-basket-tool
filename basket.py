@@ -15,7 +15,7 @@ SPECIAL_LINK_COLUMNS = {
 def load_basket_rows(path: Path) -> list[dict]:
     try:
         return _load_with_pandas(path)
-    except Exception:
+    except ImportError:
         return _load_with_stdlib(path)
 
 

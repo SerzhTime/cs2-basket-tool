@@ -5,7 +5,7 @@ from typing import Iterable
 
 import requests
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 
 
 class WaxpeerAdapter:
@@ -31,7 +31,7 @@ class WaxpeerAdapter:
             response.raise_for_status()
             body = response.json()
         except Exception as exc:
-            return [_error(item, str(exc)) for item in item_list]
+            return [_error(item, safe_error_details(exc)) for item in item_list]
 
         if body.get("success") is False:
             message = body.get("msg") or body.get("message") or "Waxpeer API returned success=false."

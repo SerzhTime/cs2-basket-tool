@@ -41,6 +41,8 @@ API_ADAPTER_KEYS = [
     "dmarket",
     "marketcsgo",
     "waxpeer",
+    "skindeck",
+    "uuskins",
     "openskin_skinport",
     "openskin_buff163",
     "openskin_youpin",

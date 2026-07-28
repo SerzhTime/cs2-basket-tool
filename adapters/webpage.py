@@ -6,7 +6,7 @@ import time
 from typing import Iterable
 from urllib.parse import quote
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 
 
 class PriceCompareWebAdapter:
@@ -86,7 +86,7 @@ class PriceCompareWebAdapter:
                         price=None,
                         currency=currency,
                         fetch_status="error",
-                        error_details=str(exc),
+                        error_details=safe_error_details(exc),
                     )
                 )
             if delay > 0:

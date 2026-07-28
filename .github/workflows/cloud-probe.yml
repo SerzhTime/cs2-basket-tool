@@ -24,18 +24,24 @@ jobs:
       HALOSKINS_API_KEY: ${{ secrets.HALOSKINS_API_KEY }}
       HALOSKINS_LOWEST_PRICE_URL: ${{ secrets.HALOSKINS_LOWEST_PRICE_URL }}
       MARKETCSGO_API_KEY: ${{ secrets.MARKETCSGO_API_KEY }}
+      SKINDECK_API_KEY: ${{ secrets.SKINDECK_API_KEY }}
+      SKINPORT_CLIENT_ID: ${{ secrets.SKINPORT_CLIENT_ID }}
+      SKINPORT_CLIENT_SECRET: ${{ secrets.SKINPORT_CLIENT_SECRET }}
       UUSKINS_APP_KEY: ${{ secrets.UUSKINS_APP_KEY }}
       UUSKINS_PRIVATE_KEY: ${{ secrets.UUSKINS_PRIVATE_KEY }}
       WAXPEER_API_KEY: ${{ secrets.WAXPEER_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
 
       - name: Run cloud IP probe
         run: >
@@ -46,7 +52,7 @@ jobs:
 
       - name: Upload probe report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cloud-probe-report
           path: reports/

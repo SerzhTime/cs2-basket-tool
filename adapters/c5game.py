@@ -5,7 +5,7 @@ from typing import Iterable
 
 import requests
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 from .fx import ExchangeRateError, fetch_cny_to_usd_rate
 
 
@@ -42,7 +42,7 @@ class C5GameAdapter:
                     price=None,
                     currency="USD",
                     fetch_status="error",
-                    error_details=str(exc),
+                    error_details=safe_error_details(exc),
                 )
                 for item in item_list
             ]
@@ -76,7 +76,7 @@ class C5GameAdapter:
                     price=None,
                     currency="USD",
                     fetch_status="error",
-                    error_details=str(exc),
+                    error_details=safe_error_details(exc),
                 )
                 for item in item_list
             ]

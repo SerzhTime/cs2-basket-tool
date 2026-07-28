@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode
 import requests
 from nacl.signing import SigningKey
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 
 
 class DMarketAdapter:
@@ -49,7 +49,7 @@ class DMarketAdapter:
                     )
                 )
             except Exception as exc:
-                results.append(_error(item, str(exc)))
+                results.append(_error(item, safe_error_details(exc)))
         return results
 
 

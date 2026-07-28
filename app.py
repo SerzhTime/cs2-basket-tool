@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 import re
+from threading import Lock, local
 import time
 
 import pandas as pd
@@ -19,6 +20,7 @@ from dotenv import load_dotenv
 import db
 from adapters import PriceResult, build_adapter_registry
 from adapters.backup_sources import apply_backup_prices, clear_backup_cache
+from adapters.base import safe_error_details
 from adapters.csgoskins import CSGOSKINS_MARKETS, clear_csgoskins_cache
 from adapters.direct_market_pages import fetch_direct_market_page_price
 from basket import load_basket_rows
@@ -47,7 +49,6 @@ def load_streamlit_secrets_into_env() -> None:
 
 
 load_streamlit_secrets_into_env()
-TABLE_BACKGROUND = "#f9fafb80"
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 LOGO_DIR = db.APP_DIR / "assets" / "logos"
 NEON_SYNC_INTERVAL_SECONDS = 3 * 60 * 60
@@ -1716,10 +1717,10 @@ def main() -> None:
                 finished_at=db.utc_now_iso(),
                 duration_seconds=time.perf_counter() - started_timer,
                 status="error",
-                error_details=str(exc),
+                error_details=safe_error_details(exc),
                 step_details=latest_update_step_details(),
             )
-            st.session_state.update_error = str(exc)
+            st.session_state.update_error = safe_error_details(exc)
         except Exception as exc:
             record_update_run_compat(
                 source="manual",
@@ -1727,7 +1728,7 @@ def main() -> None:
                 finished_at=db.utc_now_iso(),
                 duration_seconds=time.perf_counter() - started_timer,
                 status="error",
-                error_details=str(exc),
+                error_details=safe_error_details(exc),
                 step_details=latest_update_step_details(),
             )
             raise
@@ -1885,16 +1886,20 @@ def perform_neon_sync(trigger: str) -> None:
     if not db.postgres_database_url():
         st.session_state.sync_error = "DATABASE_URL is not configured, so Neon sync cannot run."
         return
+    if not _NEON_SYNC_LOCK.acquire(blocking=False):
+        st.session_state.sync_notice = "Another Neon synchronization is already running."
+        return
 
     st.session_state.neon_sync_running = True
     try:
         try:
             counts = db.sync_sqlite_to_postgres()
         except Exception as exc:
-            st.session_state.sync_error = str(exc)
+            st.session_state.sync_error = safe_error_details(exc)
             return
     finally:
         st.session_state.neon_sync_running = False
+        _NEON_SYNC_LOCK.release()
 
     record_successful_neon_sync()
     st.session_state.sync_notice = (
@@ -2234,7 +2239,7 @@ def render_manual_market_repair(marketplace_order: list[str]) -> None:
             try:
                 result_lines = repair_missing_market_prices(selected)
             except Exception as exc:
-                st.session_state.manual_repair_error = str(exc)
+                st.session_state.manual_repair_error = safe_error_details(exc)
             else:
                 st.session_state.manual_repair_result = "\n".join(result_lines)
                 clear_data_cache()
@@ -2367,7 +2372,7 @@ def fetch_repair_with_api(adapter, missing_items) -> list[PriceResult]:
                 price=None,
                 currency="USD",
                 fetch_status="error",
-                error_details=str(exc),
+                error_details=safe_error_details(exc),
             )
             for item in missing_items
         ]
@@ -3175,11 +3180,22 @@ class SnapshotQualityError(RuntimeError):
     pass
 
 
-LAST_UPDATE_STEPS: list[dict] = []
+_UPDATE_STATE = local()
+_SNAPSHOT_UPDATE_LOCK = Lock()
+_NEON_SYNC_LOCK = Lock()
+
+
+def _update_steps() -> list[dict]:
+    steps = getattr(_UPDATE_STATE, "steps", None)
+    if steps is None:
+        steps = []
+        _UPDATE_STATE.steps = steps
+    return steps
 
 
 def latest_update_step_details() -> str | None:
-    return json.dumps(LAST_UPDATE_STEPS, separators=(",", ":")) if LAST_UPDATE_STEPS else None
+    steps = _update_steps()
+    return json.dumps(steps, separators=(",", ":")) if steps else None
 
 
 def record_update_run_compat(**kwargs) -> None:
@@ -3219,7 +3235,7 @@ def fetch_adapter_group(adapters, items) -> list[dict]:
                     price=None,
                     currency="USD",
                     fetch_status="error",
-                    error_details=str(exc),
+                    error_details=safe_error_details(exc),
                 )
                 for item in items
             ]
@@ -3234,8 +3250,23 @@ def fetch_adapter_group(adapters, items) -> list[dict]:
 
 
 def collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
-    global LAST_UPDATE_STEPS
-    LAST_UPDATE_STEPS = []
+    _UPDATE_STATE.steps = []
+    if not _SNAPSHOT_UPDATE_LOCK.acquire(blocking=False):
+        raise SnapshotQualityError("Another price update is already running. Wait for it to finish and try again.")
+    try:
+        with db.remote_price_update_lock() as acquired:
+            if not acquired:
+                raise SnapshotQualityError(
+                    "Another remote update or Neon synchronization is already running. "
+                    "Wait for it to finish and try again."
+                )
+            return _collect_snapshot(progress_callback)
+    finally:
+        _SNAPSHOT_UPDATE_LOCK.release()
+
+
+def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
+    update_steps = _update_steps()
     registry = build_adapter_registry()
     clear_backup_cache()
     clear_csgoskins_cache()
@@ -3269,7 +3300,7 @@ def collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
         )
         missing = sum(result.fetch_status == "missing" for result in adapter_results)
         errors = len(adapter_results) - received - missing
-        LAST_UPDATE_STEPS.append(
+        update_steps.append(
             {
                 "step": adapter.name,
                 "received": received,
@@ -3317,7 +3348,7 @@ def collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
         result.fetch_status == "ok" and db.normalize_to_usd(result.price, result.currency) is not None
         for result in all_results
     )
-    LAST_UPDATE_STEPS.append(
+    update_steps.append(
         {
             "step": "Fallback recovery",
             "received": after_backup - before_backup,

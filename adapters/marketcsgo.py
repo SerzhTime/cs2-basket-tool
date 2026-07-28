@@ -5,7 +5,7 @@ from typing import Iterable
 
 import requests
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 
 
 class MarketCSGOAdapter:
@@ -27,7 +27,7 @@ class MarketCSGOAdapter:
             response.raise_for_status()
             body = response.json()
         except Exception as exc:
-            return [_error(item, str(exc), currency) for item in item_list]
+            return [_error(item, safe_error_details(exc), currency) for item in item_list]
 
         if body.get("success") is False:
             message = body.get("error") or body.get("message") or "Market.CSGO returned success=false."

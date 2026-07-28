@@ -5,7 +5,7 @@ from typing import Iterable
 
 import requests
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 
 
 class HaloSkinsAdapter:
@@ -53,7 +53,7 @@ class HaloSkinsAdapter:
                     price=None,
                     currency=_currency(),
                     fetch_status="error",
-                    error_details=str(exc),
+                    error_details=safe_error_details(exc),
                 )
                 for item in item_list
             ]

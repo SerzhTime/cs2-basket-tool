@@ -5,7 +5,7 @@ from typing import Iterable
 
 import requests
 
-from .base import BasketItem, PriceResult
+from .base import BasketItem, PriceResult, safe_error_details
 
 
 class CSFloatAdapter:
@@ -57,7 +57,7 @@ class CSFloatAdapter:
                     )
                 )
             except Exception as exc:
-                results.append(_error(item, str(exc)))
+                results.append(_error(item, safe_error_details(exc)))
         return results
 
 
