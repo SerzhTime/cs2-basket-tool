@@ -558,6 +558,10 @@ def main() -> None:
             object-fit: contain;
             width: 24px;
         }
+        .kpi-logo-skindeck {
+            border-radius: 7px;
+            clip-path: inset(0 round 7px);
+        }
         .kpi-card strong,
         .kpi-card span:not(.kpi-diff) {
             color: #ffffff;
@@ -2648,7 +2652,12 @@ def marketplace_kpi_card_html(title: str, row: dict | None, *, empty_subtitle: s
         return kpi_card_html(title, "N/A", empty_subtitle)
     marketplace = row["marketplace"]
     logo = marketplace_logo_src(marketplace)
-    logo_html = f'<img class="kpi-logo" src="{escape(logo)}" alt="{escape(marketplace)} logo">' if logo else ""
+    logo_class = "kpi-logo kpi-logo-skindeck" if marketplace == "Skindeck" else "kpi-logo"
+    logo_html = (
+        f'<img class="{logo_class}" src="{escape(logo)}" alt="{escape(marketplace)} logo">'
+        if logo
+        else ""
+    )
     diff_class = "negative" if row["diff"] < 0 else "positive" if row["diff"] > 0 else ""
     return (
         '<div class="kpi-card">'
