@@ -4,6 +4,7 @@
   const selector = [
     ".st-key-history_timestamp_table",
     ".st-key-update_run_log",
+    ".st-key-latest_update_timing",
     ".st-key-last_update_item_status",
     ".st-key-adapter_status",
     ".st-key-marketplace_coverage",

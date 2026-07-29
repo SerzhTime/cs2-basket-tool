@@ -1804,51 +1804,40 @@ def render_update_runs_table() -> None:
     if not rows:
         st.caption("No manual or automatic update runs recorded yet.")
         return
-    detail_rows: list[dict] = []
-    for run_index, row in enumerate(rows):
-        started = format_timestamp_utc8(row["started_at"])
-        finished = format_timestamp_utc8(row["finished_at"])
-        common = {
-            "started": started,
-            "finished": finished,
+    summary_rows = [
+        {
+            "started": format_timestamp_utc8(row["started_at"]),
+            "finished": format_timestamp_utc8(row["finished_at"]),
             "source": row["source"],
+            "duration": format_duration_seconds(row["duration_seconds"]),
             "status": row["status"],
             "snapshot": row["snapshot_id"],
             "data received": "" if row["success_rate"] is None else f"{float(row['success_rate']):.0%}",
             "error": row["error_details"],
         }
-        # Keep recent runs fully detailed without making the historical page
-        # render thousands of marketplace rows after months of updates.
-        steps = parse_update_steps(row.get("step_details")) if run_index < 10 else []
-        if not steps:
-            detail_rows.append(
-                {
-                    **common,
-                    "provider": "",
-                    "step": "Run summary",
-                    "duration": format_duration_seconds(row["duration_seconds"]),
-                    "received": "",
-                    "missing": "",
-                    "errors": "",
-                }
-            )
-            continue
-        for step in steps:
-            detail_rows.append(
-                {
-                    **common,
-                    "step": step.get("step", "Update step"),
-                    "provider": step.get("provider_group", ""),
-                    "duration": format_duration_seconds(step.get("duration_seconds")),
-                    "received": step.get("received", ""),
-                    "missing": step.get("missing", ""),
-                    "errors": step.get("errors", ""),
-                }
-            )
-    table_df = pd.DataFrame(detail_rows)[
-        ["started", "source", "provider", "step", "duration", "received", "missing", "errors", "status", "snapshot", "data received", "error"]
+        for row in rows
     ]
-    render_secondary_table(table_df, "update_run_log")
+    render_secondary_table(pd.DataFrame(summary_rows), "update_run_log")
+
+    st.subheader("Latest Update Timing")
+    latest = rows[0]
+    steps = parse_update_steps(latest.get("step_details"))
+    if not steps:
+        st.caption("Detailed timing is not available for the latest update.")
+        return
+    timing_rows = [
+        {
+            "provider": step.get("provider_group", ""),
+            "step": step.get("step", "Update step"),
+            "duration (s)": format_decimal_seconds(step.get("duration_seconds")),
+            "elapsed (s)": format_decimal_seconds(step.get("elapsed_seconds")),
+            "received": step.get("received", ""),
+            "missing": step.get("missing", ""),
+            "errors": step.get("errors", ""),
+        }
+        for step in steps
+    ]
+    render_secondary_table(pd.DataFrame(timing_rows), "latest_update_timing")
 
 
 def parse_update_steps(value) -> list[dict]:
@@ -1873,6 +1862,13 @@ def format_duration_seconds(value: object) -> str:
     if minutes:
         return f"{minutes}m {rem}s"
     return f"{rem}s"
+
+
+def format_decimal_seconds(value: object) -> str:
+    try:
+        return f"{max(0.0, float(value)):.1f}"
+    except (TypeError, ValueError):
+        return ""
 
 
 def since_for_range(label: str | None) -> str | None:

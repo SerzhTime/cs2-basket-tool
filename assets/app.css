@@ -1152,6 +1152,78 @@ html body .stApp div[data-testid="stDataEditor"] canvas {
     background-clip: content-box;
     border-radius: 8px;
 }
+.st-key-latest_update_timing {
+    background: transparent !important;
+    border: 1px solid #ff8a1f !important;
+    border-radius: 6px;
+    max-height: 390px;
+    overflow: overlay !important;
+    scrollbar-gutter: auto !important;
+    scrollbar-width: thin !important;
+    scrollbar-color: rgba(156, 163, 175, 0.72) transparent !important;
+}
+.st-key-latest_update_timing [data-testid="stElementContainer"],
+.st-key-latest_update_timing [data-testid="stTable"],
+.st-key-latest_update_timing [data-testid="stTable"] > div {
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    border: 0 !important;
+}
+.st-key-latest_update_timing table {
+    background: transparent !important;
+    border-collapse: collapse !important;
+    color: #ffffff !important;
+    font-size: 13px !important;
+    line-height: 1.2 !important;
+    margin: 0 0 -2px !important;
+    width: 100% !important;
+}
+.st-key-latest_update_timing th,
+.st-key-latest_update_timing td {
+    border: 1px solid rgba(93, 105, 122, 0.42) !important;
+    color: #ffffff !important;
+    font-size: 13px !important;
+    padding: 6px 8px !important;
+}
+.st-key-latest_update_timing thead th {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 3 !important;
+    padding: 10px 8px !important;
+    background: rgba(28, 32, 41, 0.98) !important;
+    color: #a8b0bd !important;
+    font-weight: 400 !important;
+    border-top: 0 !important;
+}
+.st-key-latest_update_timing thead th * {
+    color: #a8b0bd !important;
+    -webkit-text-fill-color: #a8b0bd !important;
+    font-size: 13px !important;
+    font-weight: 400 !important;
+    line-height: 1.2 !important;
+}
+.st-key-latest_update_timing td,
+.st-key-latest_update_timing td * {
+    background: transparent !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    font-size: 13px !important;
+    line-height: 1.2 !important;
+}
+.st-key-latest_update_timing th:first-child,
+.st-key-latest_update_timing td:first-child { border-left: 0 !important; }
+.st-key-latest_update_timing th:last-child,
+.st-key-latest_update_timing td:last-child { border-right: 0 !important; }
+.st-key-latest_update_timing tbody tr:last-child td { border-bottom: 0 !important; }
+.st-key-latest_update_timing::-webkit-scrollbar { width: 8px; height: 8px; }
+.st-key-latest_update_timing::-webkit-scrollbar-track { background: transparent; }
+.st-key-latest_update_timing::-webkit-scrollbar-thumb {
+    background: rgba(156, 163, 175, 0.72);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 8px;
+}
 /* Data editors already provide a bounded, sticky-header grid.  Avoid a
    second outer scroller and place the orange edge on the grid itself. */
 .st-key-basket_items_editor,

@@ -89,6 +89,7 @@ def collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
 
 
 def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
+    run_started = time.perf_counter()
     update_steps = _update_steps()
     registry = build_adapter_registry()
     clear_backup_cache()
@@ -130,6 +131,7 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
                 "missing": missing,
                 "errors": errors,
                 "duration_seconds": round(completed["duration_seconds"], 3),
+                "elapsed_seconds": round(time.perf_counter() - run_started, 3),
                 "provider_group": provider_group,
             }
         )
@@ -177,6 +179,7 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
             "missing": None,
             "errors": None,
             "duration_seconds": round(time.perf_counter() - backup_started, 3),
+            "elapsed_seconds": round(time.perf_counter() - run_started, 3),
             "provider_group": "Fallback",
         }
     )
@@ -191,7 +194,19 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
         )
 
     report_progress("Applying 24-hour price carry-forward")
+    carry_forward_started = time.perf_counter()
     all_results = _carry_forward_recent_prices(all_results)
+    update_steps.append(
+        {
+            "step": "24-hour price carry-forward",
+            "received": _successful_result_count(all_results),
+            "missing": None,
+            "errors": None,
+            "duration_seconds": round(time.perf_counter() - carry_forward_started, 3),
+            "elapsed_seconds": round(time.perf_counter() - run_started, 3),
+            "provider_group": "Database",
+        }
+    )
     report_progress("24-hour price carry-forward completed")
     missing_baseline = missing_baseline_items(all_results, items)
     if missing_baseline:
@@ -211,7 +226,19 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
         )
 
     report_progress("Saving snapshot")
+    save_started = time.perf_counter()
     snapshot_id, timestamp = db.save_snapshot_results(recordable_results)
+    update_steps.append(
+        {
+            "step": "Save snapshot",
+            "received": len(recordable_results),
+            "missing": None,
+            "errors": None,
+            "duration_seconds": round(time.perf_counter() - save_started, 3),
+            "elapsed_seconds": round(time.perf_counter() - run_started, 3),
+            "provider_group": "Database",
+        }
+    )
     report_progress(f"Snapshot #{snapshot_id} saved")
     if skipped_marketplaces:
         skipped = set(skipped_marketplaces)
