@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event, Thread
 from typing import Iterable, Any
 
 from adapters import BasketItem, PriceResult, build_adapter_registry
@@ -34,6 +35,7 @@ REMOVED_MOCK_MARKETPLACES = {
     "CS.Money Mock",
     "ShadowPay Mock",
 }
+REMOTE_LOCK_HEARTBEAT_SECONDS = 30.0
 
 
 def postgres_database_url() -> str | None:
@@ -147,6 +149,8 @@ def remote_price_update_lock():
 
     import psycopg
 
+    stop_heartbeat = Event()
+    heartbeat: Thread | None = None
     with psycopg.connect(database_url(), autocommit=True) as con:
         acquired = bool(
             con.execute(
@@ -154,14 +158,40 @@ def remote_price_update_lock():
                 ("cs2dt_neon_sync",),
             ).fetchone()[0]
         )
+        if acquired:
+            heartbeat = Thread(
+                target=_keep_remote_lock_connection_alive,
+                args=(con, stop_heartbeat),
+                daemon=True,
+                name="cs2dt-neon-lock-heartbeat",
+            )
+            heartbeat.start()
         try:
             yield acquired
         finally:
+            stop_heartbeat.set()
+            if heartbeat is not None:
+                heartbeat.join(timeout=5)
             if acquired:
-                con.execute(
-                    "SELECT pg_advisory_unlock(hashtext(%s))",
-                    ("cs2dt_neon_sync",),
-                )
+                try:
+                    con.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s))",
+                        ("cs2dt_neon_sync",),
+                    )
+                except psycopg.Error:
+                    # A terminated PostgreSQL session has already released all
+                    # session advisory locks. Do not turn a saved snapshot into
+                    # a failed run only because explicit cleanup is impossible.
+                    if not con.closed:
+                        raise
+
+
+def _keep_remote_lock_connection_alive(con, stop_event: Event) -> None:
+    while not stop_event.wait(REMOTE_LOCK_HEARTBEAT_SECONDS):
+        try:
+            con.execute("SELECT 1")
+        except Exception:
+            return
 
 
 def utc_now_iso() -> str:
