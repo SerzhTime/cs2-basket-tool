@@ -851,7 +851,9 @@ def _save_snapshot_results_once(results: list[PriceResult]) -> tuple[int, str]:
     status_by_marketplace: dict[str, list[tuple[str, str | None]]] = {}
     with connect() as con:
         if using_postgres():
-            _acquire_postgres_sync_lock(con)
+            # collect_snapshot() already holds the cross-process
+            # cs2dt_neon_sync session lock. Reacquiring that lock through
+            # this separate connection would wait on our own session forever.
             cur = con.execute("INSERT INTO snapshots(timestamp) VALUES (?) RETURNING snapshot_id", (timestamp,))
             snapshot_id = int(cur.fetchone()["snapshot_id"])
         else:

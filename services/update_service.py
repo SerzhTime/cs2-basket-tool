@@ -190,7 +190,9 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
             f"({success_rate:.0%}) were received. Previous successful data is still displayed."
         )
 
+    report_progress("Applying 24-hour price carry-forward")
     all_results = _carry_forward_recent_prices(all_results)
+    report_progress("24-hour price carry-forward completed")
     missing_baseline = missing_baseline_items(all_results, items)
     if missing_baseline:
         preview = ", ".join(missing_baseline[:3])
@@ -208,7 +210,9 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
             "Previous successful data is still displayed."
         )
 
+    report_progress("Saving snapshot")
     snapshot_id, timestamp = db.save_snapshot_results(recordable_results)
+    report_progress(f"Snapshot #{snapshot_id} saved")
     if skipped_marketplaces:
         skipped = set(skipped_marketplaces)
         db.update_marketplace_statuses_from_results(
