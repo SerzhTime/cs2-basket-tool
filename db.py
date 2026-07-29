@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import os
 import json
+import hashlib
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,7 @@ REMOVED_MOCK_MARKETPLACES = {
     "ShadowPay Mock",
 }
 REMOTE_LOCK_HEARTBEAT_SECONDS = 30.0
+NEON_SYNC_MANIFEST_PATH = APP_DIR / ".runtime" / "neon_snapshot_sync_manifest.json"
 
 
 def postgres_database_url() -> str | None:
@@ -1219,9 +1221,12 @@ def sync_sqlite_to_postgres() -> dict[str, int]:
     if not postgres_database_url():
         raise RuntimeError("DATABASE_URL is not configured.")
 
+    started = time.perf_counter()
     for attempt in range(3):
         try:
-            return _sync_sqlite_to_postgres_once()
+            counts = _sync_sqlite_to_postgres_once()
+            counts["elapsed_seconds"] = time.perf_counter() - started
+            return counts
         except Exception as exc:
             if not _is_deadlock_error(exc) or attempt == 2:
                 raise
@@ -1231,7 +1236,6 @@ def sync_sqlite_to_postgres() -> dict[str, int]:
 
 
 def _sync_sqlite_to_postgres_once() -> dict[str, int]:
-
     counts = {
         "basket_items": 0,
         "marketplaces": 0,
@@ -1242,7 +1246,15 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
         "update_runs": 0,
         "pulled_update_runs": 0,
         "replaced_snapshots": 0,
+        "checked_snapshots": 0,
+        "unchanged_snapshots": 0,
+        "full_reconcile": 0,
     }
+    manifest = _load_neon_sync_manifest()
+    force_full_reconcile = _neon_full_reconcile_due(manifest)
+    counts["full_reconcile"] = int(force_full_reconcile)
+    local_revision_before_sync = _local_sync_revision()
+    local_data_changed = manifest.get("local_revision") != local_revision_before_sync
     source = sqlite3.connect(DB_PATH)
     source.row_factory = sqlite3.Row
     try:
@@ -1254,59 +1266,85 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
             _sync_basket_items_to_postgres(source, target, counts)
             _sync_marketplaces_to_postgres(source, target, counts)
             _sync_update_runs_to_postgres(source, target, counts)
-            item_map = {
-                row["market_hash_name"]: int(row["item_id"])
-                for row in target.execute("SELECT item_id, market_hash_name FROM basket_items").fetchall()
-            }
-            for snapshot in source.execute("SELECT * FROM snapshots ORDER BY timestamp, snapshot_id"):
-                target_snapshot_id, existing_points = _postgres_snapshot_for_timestamp(target, snapshot["timestamp"])
-                batch = []
-                for point in source.execute(
-                    "SELECT * FROM price_points WHERE snapshot_id = ? ORDER BY price_point_id",
-                    (snapshot["snapshot_id"],),
-                ):
-                    batch.append(
+            synced_manifest = manifest["snapshot_signatures"]
+            if local_data_changed or force_full_reconcile:
+                local_snapshots = _sqlite_snapshot_states(source)
+                remote_snapshots = _postgres_snapshot_metadata(target)
+                remote_signatures = (
+                    _postgres_snapshot_signatures(target) if force_full_reconcile else {}
+                )
+                item_map = {
+                    row["market_hash_name"]: int(row["item_id"])
+                    for row in target.execute("SELECT item_id, market_hash_name FROM basket_items").fetchall()
+                }
+                counts["checked_snapshots"] = len(local_snapshots)
+                for timestamp, local_snapshot in local_snapshots.items():
+                    remote_snapshot = remote_snapshots.get(timestamp)
+                    if force_full_reconcile:
+                        needs_push = (
+                            remote_snapshot is None
+                            or remote_signatures.get(timestamp) != local_snapshot["signature"]
+                        )
+                    else:
+                        needs_push = (
+                            remote_snapshot is None
+                            or int(remote_snapshot["point_count"]) != int(local_snapshot["point_count"])
+                            or manifest["snapshot_signatures"].get(timestamp) != local_snapshot["signature"]
+                        )
+                    if not needs_push:
+                        counts["unchanged_snapshots"] += 1
+                        continue
+
+                    if remote_snapshot is None:
+                        cur = target.execute(
+                            "INSERT INTO snapshots(timestamp) VALUES (?) RETURNING snapshot_id",
+                            (timestamp,),
+                        )
+                        target_snapshot_id = int(cur.fetchone()["snapshot_id"])
+                    else:
+                        target_snapshot_id = int(remote_snapshot["snapshot_id"])
+                        target.execute("DELETE FROM price_points WHERE snapshot_id = ?", (target_snapshot_id,))
+                        counts["replaced_snapshots"] += 1
+                    point_values = _sqlite_snapshot_point_values(source, int(local_snapshot["snapshot_id"]))
+                    batch = [
                         (
                             target_snapshot_id,
-                            point["marketplace"],
-                            item_map.get(point["market_hash_name"]),
-                            point["market_hash_name"],
-                            _float_or_none(point["price"]),
-                            point["currency"] or "USD",
-                            _float_or_none(point["normalized_price"]),
-                            point["normalized_currency"] or "USD",
-                            _int_or_none(point["stock_count"]),
-                            point["fetch_status"],
-                            _none_if_blank(point["error_details"]),
-                            point["timestamp"],
+                            values[0],
+                            item_map.get(values[1]),
+                            *values[1:],
                         )
-                    )
-                local_keys = {(row[1], row[3]) for row in batch}
-                remote_keys = _snapshot_market_item_keys(target, target_snapshot_id) if existing_points else set()
-                if existing_points and remote_keys == local_keys:
-                    continue
-                if existing_points:
-                    target.execute("DELETE FROM price_points WHERE snapshot_id = ?", (target_snapshot_id,))
-                    counts["replaced_snapshots"] += 1
-                if batch:
-                    target.executemany(
-                        """
-                        INSERT INTO price_points (
-                            snapshot_id, marketplace, item_id, market_hash_name,
-                            price, currency, normalized_price, normalized_currency,
-                            stock_count, fetch_status, error_details, timestamp
+                        for values in point_values
+                    ]
+                    if batch:
+                        target.executemany(
+                            """
+                            INSERT INTO price_points (
+                                snapshot_id, marketplace, item_id, market_hash_name,
+                                price, currency, normalized_price, normalized_currency,
+                                stock_count, fetch_status, error_details, timestamp
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            batch,
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        batch,
-                    )
-                counts["snapshots"] += 1
-                counts["price_points"] += len(batch)
+                    counts["snapshots"] += 1
+                    counts["price_points"] += len(batch)
+                synced_manifest = {
+                    timestamp: str(snapshot["signature"])
+                    for timestamp, snapshot in local_snapshots.items()
+                }
             _sync_missing_postgres_snapshots_to_sqlite(source, target, counts)
             _sync_missing_postgres_update_runs_to_sqlite(source, target, counts)
             source.commit()
+            if counts["pulled_snapshots"]:
+                synced_manifest = _sqlite_snapshot_signatures(source)
     finally:
         source.close()
+    _save_neon_sync_manifest(
+        synced_manifest,
+        full_reconciled_at=time.time() if force_full_reconcile else manifest.get("last_full_reconciled_at"),
+        local_revision=_local_sync_revision(),
+    )
     return counts
 
 
@@ -1319,6 +1357,173 @@ def _is_deadlock_error(exc: Exception) -> bool:
     if sqlstate == "40P01":
         return True
     return "deadlock detected" in str(exc).lower()
+
+
+def _neon_full_reconcile_due(manifest: dict) -> bool:
+    try:
+        last_full = float(manifest.get("last_full_reconciled_at") or 0)
+        hours = max(1.0, float(os.getenv("NEON_FULL_RECONCILE_HOURS", "24")))
+    except (TypeError, ValueError):
+        return True
+    return time.time() - last_full >= hours * 60.0 * 60.0
+
+
+def _load_neon_sync_manifest() -> dict:
+    try:
+        payload = json.loads(NEON_SYNC_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    signatures = payload.get("snapshot_signatures")
+    return {
+        "snapshot_signatures": {
+            str(timestamp): str(signature)
+            for timestamp, signature in (signatures.items() if isinstance(signatures, dict) else [])
+        },
+        "last_full_reconciled_at": payload.get("last_full_reconciled_at"),
+        "local_revision": payload.get("local_revision"),
+    }
+
+
+def _save_neon_sync_manifest(
+    snapshot_signatures: dict[str, str],
+    *,
+    full_reconciled_at,
+    local_revision: dict[str, int],
+) -> None:
+    payload = {
+        "snapshot_signatures": snapshot_signatures,
+        "last_full_reconciled_at": full_reconciled_at,
+        "local_revision": local_revision,
+    }
+    try:
+        NEON_SYNC_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = NEON_SYNC_MANIFEST_PATH.with_suffix(".tmp")
+        temporary_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        temporary_path.replace(NEON_SYNC_MANIFEST_PATH)
+    except OSError:
+        # A failed manifest write only causes a future sync to reconcile again.
+        pass
+
+
+def _sqlite_snapshot_point_values(source: sqlite3.Connection, snapshot_id: int) -> list[tuple]:
+    rows = source.execute(
+        """
+        SELECT marketplace, market_hash_name, price, currency, normalized_price,
+            normalized_currency, stock_count, fetch_status, error_details, timestamp
+        FROM price_points
+        WHERE snapshot_id = ?
+        ORDER BY marketplace, market_hash_name, price_point_id
+        """,
+        (snapshot_id,),
+    ).fetchall()
+    return [_price_point_signature_values(row) for row in rows]
+
+
+def _sqlite_snapshot_signatures(source: sqlite3.Connection) -> dict[str, str]:
+    return {
+        timestamp: str(snapshot["signature"])
+        for timestamp, snapshot in _sqlite_snapshot_states(source).items()
+    }
+
+
+def _sqlite_snapshot_states(source: sqlite3.Connection) -> dict[str, dict[str, int | str]]:
+    snapshots: dict[str, dict[str, int | str]] = {}
+    for snapshot in source.execute("SELECT snapshot_id, timestamp FROM snapshots ORDER BY snapshot_id"):
+        values = _sqlite_snapshot_point_values(source, int(snapshot["snapshot_id"]))
+        snapshots[str(snapshot["timestamp"])] = {
+            "snapshot_id": int(snapshot["snapshot_id"]),
+            "signature": _snapshot_signature(values),
+            "point_count": len(values),
+        }
+    return snapshots
+
+
+def _local_sync_revision() -> dict[str, int]:
+    paths = (DB_PATH, DB_PATH.with_name(f"{DB_PATH.name}-wal"))
+    revision: dict[str, int] = {}
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        revision[path.name] = int(stat.st_mtime_ns)
+        revision[f"{path.name}:size"] = int(stat.st_size)
+    return revision
+
+
+def _postgres_snapshot_metadata(target: DbConnection) -> dict[str, dict[str, int]]:
+    rows = target.execute(
+        """
+        SELECT s.snapshot_id, s.timestamp, COUNT(pp.price_point_id) AS point_count
+        FROM snapshots s
+        LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
+        GROUP BY s.snapshot_id, s.timestamp
+        ORDER BY s.snapshot_id
+        """
+    ).fetchall()
+    return {
+        str(row["timestamp"]): {
+            "snapshot_id": int(row["snapshot_id"]),
+            "point_count": int(row["point_count"] or 0),
+        }
+        for row in rows
+    }
+
+
+def _postgres_snapshot_signatures(target: DbConnection) -> dict[str, str]:
+    rows = target.execute(
+        """
+        SELECT s.snapshot_id, s.timestamp, pp.marketplace, pp.market_hash_name,
+            pp.price, pp.currency, pp.normalized_price, pp.normalized_currency,
+            pp.stock_count, pp.fetch_status, pp.error_details, pp.timestamp AS point_timestamp
+        FROM snapshots s
+        LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
+        ORDER BY s.snapshot_id, pp.marketplace, pp.market_hash_name, pp.price_point_id
+        """
+    ).fetchall()
+    signatures: dict[str, str] = {}
+    current_id: int | None = None
+    current_timestamp = ""
+    current_values: list[tuple] = []
+    for row in rows:
+        snapshot_id = int(row["snapshot_id"])
+        if current_id is not None and snapshot_id != current_id:
+            signatures[current_timestamp] = _snapshot_signature(current_values)
+            current_values = []
+        current_id = snapshot_id
+        current_timestamp = str(row["timestamp"])
+        if row["marketplace"] is not None:
+            current_values.append(_price_point_signature_values(row, timestamp_key="point_timestamp"))
+    if current_id is not None:
+        signatures[current_timestamp] = _snapshot_signature(current_values)
+    return signatures
+
+
+def _price_point_signature_values(row, *, timestamp_key: str = "timestamp") -> tuple:
+    return (
+        str(row["marketplace"]),
+        str(row["market_hash_name"]),
+        _float_or_none(row["price"]),
+        row["currency"] or "USD",
+        _float_or_none(row["normalized_price"]),
+        row["normalized_currency"] or "USD",
+        _int_or_none(row["stock_count"]),
+        row["fetch_status"],
+        _none_if_blank(row["error_details"]),
+        row[timestamp_key],
+    )
+
+
+def _snapshot_signature(values: list[tuple]) -> str:
+    digest = hashlib.sha256()
+    for row in values:
+        normalized = [
+            "" if value is None else format(value, ".12g") if isinstance(value, float) else str(value)
+            for value in row
+        ]
+        digest.update(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def _sync_missing_postgres_snapshots_to_sqlite(
@@ -1560,41 +1765,6 @@ def _sync_marketplaces_to_postgres(source: sqlite3.Connection, target: DbConnect
             ),
         )
         counts["marketplaces"] += 1
-
-
-def _postgres_snapshot_for_timestamp(target: DbConnection, timestamp: str) -> tuple[int, int]:
-    row = target.execute(
-        """
-        SELECT
-            s.snapshot_id,
-            COUNT(pp.price_point_id) AS point_count
-        FROM snapshots s
-        LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
-        WHERE s.timestamp = ?
-        GROUP BY s.snapshot_id
-        ORDER BY s.snapshot_id DESC
-        LIMIT 1
-        """,
-        (timestamp,),
-    ).fetchone()
-    if row:
-        return int(row["snapshot_id"]), int(row["point_count"] or 0)
-    cur = target.execute("INSERT INTO snapshots(timestamp) VALUES (?) RETURNING snapshot_id", (timestamp,))
-    return int(cur.fetchone()["snapshot_id"]), 0
-
-
-def _snapshot_market_item_keys(target: DbConnection, snapshot_id: int) -> set[tuple[str, str]]:
-    return {
-        (str(row["marketplace"]), str(row["market_hash_name"]))
-        for row in target.execute(
-            """
-            SELECT marketplace, market_hash_name
-            FROM price_points
-            WHERE snapshot_id = ?
-            """,
-            (snapshot_id,),
-        ).fetchall()
-    }
 
 
 def _none_if_blank(value):

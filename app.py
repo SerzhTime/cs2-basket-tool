@@ -522,24 +522,66 @@ def perform_neon_sync(trigger: str) -> None:
         st.session_state.sync_notice = "Another Neon synchronization is already running."
         return
 
+    started_at = db.utc_now_iso()
+    started_timer = time.perf_counter()
     st.session_state.neon_sync_running = True
     try:
         try:
             counts = db.sync_sqlite_to_postgres()
         except Exception as exc:
-            st.session_state.sync_error = safe_error_details(exc)
+            error_details = safe_error_details(exc)
+            record_update_run_compat(
+                source="sync",
+                started_at=started_at,
+                finished_at=db.utc_now_iso(),
+                duration_seconds=time.perf_counter() - started_timer,
+                status="error",
+                error_details=error_details,
+                step_details=json.dumps([{"provider_group": "Neon", "step": "Synchronization", "errors": error_details}]),
+            )
+            st.session_state.sync_error = error_details
             return
     finally:
         st.session_state.neon_sync_running = False
         _NEON_SYNC_LOCK.release()
 
     record_successful_neon_sync()
+    elapsed_seconds = float(counts.get("elapsed_seconds", time.perf_counter() - started_timer))
+    sync_step = "Full reconciliation" if counts.get("full_reconcile") else "Incremental synchronization"
+    record_update_run_compat(
+        source="sync",
+        started_at=started_at,
+        finished_at=db.utc_now_iso(),
+        duration_seconds=elapsed_seconds,
+        status="ok",
+        error_details=(
+            f"checked {counts.get('checked_snapshots', 0)} snapshots, "
+            f"unchanged {counts.get('unchanged_snapshots', 0)}"
+        ),
+        step_details=json.dumps(
+            [
+                {
+                    "provider_group": "Neon",
+                    "step": sync_step,
+                    "duration_seconds": elapsed_seconds,
+                    "elapsed_seconds": elapsed_seconds,
+                    "received": (
+                        f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points; "
+                        f"pulled {counts['pulled_snapshots']} snapshots / {counts['pulled_price_points']} price points"
+                    ),
+                    "missing": counts.get("unchanged_snapshots", 0),
+                    "errors": "",
+                }
+            ]
+        ),
+    )
     repaired = counts.get("replaced_snapshots", 0)
     repair_text = f", repaired {repaired} partial snapshots" if repaired else ""
     st.session_state.sync_notice = (
-        f"{sync_trigger_label(trigger)} sync completed: "
+        f"{sync_trigger_label(trigger)} sync completed in {elapsed_seconds:.1f}s: "
         f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points, "
         f"pulled {counts['pulled_snapshots']} snapshots / {counts['pulled_price_points']} price points"
+        f", checked {counts.get('checked_snapshots', 0)} snapshots"
         f"{repair_text}."
     )
     clear_data_cache()
