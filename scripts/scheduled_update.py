@@ -25,8 +25,17 @@ def main() -> int:
     sync_basket_file()
     started_at = db.utc_now_iso()
     started_timer = time.perf_counter()
+
+    def report_progress(received: int, total: int, message: str) -> None:
+        elapsed = time.perf_counter() - started_timer
+        print(
+            f"[{elapsed:7.1f}s] {received}/{total} prices received"
+            f"{f' - {message}' if message else ''}",
+            flush=True,
+        )
+
     try:
-        snapshot_id, timestamp, success_rate = collect_snapshot()
+        snapshot_id, timestamp, success_rate = collect_snapshot(progress_callback=report_progress)
     except SnapshotQualityError as exc:
         error_details = safe_error_details(exc)
         db.record_update_run(

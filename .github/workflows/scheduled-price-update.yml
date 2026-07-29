@@ -12,7 +12,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       C5GAME_APP_KEY: ${{ secrets.C5GAME_APP_KEY }}
@@ -33,6 +33,8 @@ jobs:
       CSGOSKINS_READER_URL_TEMPLATE: https://r.jina.ai/http://{url}
       CSGOSKINS_DELAY_SECONDS: "4.0"
       CSGOSKINS_DELAY_JITTER_SECONDS: "4.0"
+      PRICE_UPDATE_MAX_WORKERS: "12"
+      PRICE_BACKUP_BUDGET_SECONDS: "480"
     steps:
       - uses: actions/checkout@v6
 

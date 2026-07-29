@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib
 import json
 from threading import Lock, local
+import os
 import time
 
 import db
@@ -147,7 +148,8 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
         grouped_adapters.setdefault(adapter_provider_group(key), []).append(adapter)
 
     report_progress(f"Updating {len(grouped_adapters)} provider groups in parallel")
-    worker_count = min(4, max(1, len(grouped_adapters)))
+    worker_limit = max(1, int(os.getenv("PRICE_UPDATE_MAX_WORKERS", "12")))
+    worker_count = min(worker_limit, max(1, len(grouped_adapters)))
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="price-provider") as executor:
         futures = {
             executor.submit(fetch_adapter_group, group_adapters, items): group_name
@@ -160,8 +162,13 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
 
     report_progress("Applying fallback prices")
     backup_started = time.perf_counter()
+    backup_budget = max(0.0, float(os.getenv("PRICE_BACKUP_BUDGET_SECONDS", "480")))
     before_backup = _successful_result_count(all_results)
-    all_results = apply_backup_prices(all_results, items)
+    all_results = apply_backup_prices(
+        all_results,
+        items,
+        deadline=time.monotonic() + backup_budget,
+    )
     after_backup = _successful_result_count(all_results)
     update_steps.append(
         {

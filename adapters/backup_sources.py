@@ -51,7 +51,12 @@ class BackupOffer:
     source: str
 
 
-def apply_backup_prices(results: list[PriceResult], items: Iterable[BasketItem]) -> list[PriceResult]:
+def apply_backup_prices(
+    results: list[PriceResult],
+    items: Iterable[BasketItem],
+    *,
+    deadline: float | None = None,
+) -> list[PriceResult]:
     if os.getenv("STEAMANALYST_BACKUP_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
         return results
 
@@ -64,6 +69,9 @@ def apply_backup_prices(results: list[PriceResult], items: Iterable[BasketItem])
 
     updated: list[PriceResult] = []
     for result in results:
+        if deadline is not None and time.monotonic() >= deadline:
+            updated.append(result)
+            continue
         if _successful(result) or result.marketplace == "HaloSkins":
             updated.append(result)
             continue
