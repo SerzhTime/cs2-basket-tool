@@ -198,18 +198,30 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
-def init_db() -> None:
+def init_db(*, migrate: bool = True, maintenance: bool = True) -> None:
+    """Prepare the database for the application or a scheduled update.
+
+    Schema migrations and history pruning are intentionally skipped by the
+    scheduled updater.  They can take DDL locks or scan the full history while
+    another client is using Neon; a scheduled update only needs an existing,
+    usable schema.
+    """
     with connect() as con:
-        con.executescript(_schema_sql())
-        ensure_price_point_uniqueness(con)
-        ensure_column(con, "basket_items", "multiplier", "INTEGER NOT NULL DEFAULT 1")
-        ensure_column(con, "basket_items", "price_compare_url", "TEXT")
-        ensure_column(con, "basket_items", "priceempire_url", "TEXT")
-        ensure_column(con, "basket_items", "steamanalyst_url", "TEXT")
-        ensure_column(con, "basket_items", "marketplace_links_json", "TEXT")
-        ensure_column(con, "update_runs", "step_details", "TEXT")
-        remove_mock_marketplaces(con)
-        prune_low_quality_snapshots(con, MIN_SNAPSHOT_SUCCESS_RATE)
+        if migrate:
+            con.executescript(_schema_sql())
+            ensure_price_point_uniqueness(con)
+            ensure_column(con, "basket_items", "multiplier", "INTEGER NOT NULL DEFAULT 1")
+            ensure_column(con, "basket_items", "price_compare_url", "TEXT")
+            ensure_column(con, "basket_items", "priceempire_url", "TEXT")
+            ensure_column(con, "basket_items", "steamanalyst_url", "TEXT")
+            ensure_column(con, "basket_items", "marketplace_links_json", "TEXT")
+            ensure_column(con, "update_runs", "step_details", "TEXT")
+        else:
+            # Fail quickly and clearly if the database was never initialized.
+            con.execute("SELECT 1 FROM basket_items LIMIT 1")
+        if maintenance:
+            remove_mock_marketplaces(con)
+            prune_low_quality_snapshots(con, MIN_SNAPSHOT_SUCCESS_RATE)
     seed_marketplaces()
 
 

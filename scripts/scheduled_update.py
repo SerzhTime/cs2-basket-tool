@@ -20,9 +20,15 @@ from services.update_service import (  # noqa: E402
 
 
 def main() -> int:
+    startup_timer = time.perf_counter()
+    print("[startup] Loading configuration", flush=True)
     load_dotenv(ROOT / ".env")
-    db.init_db()
+    print("[startup] Checking database readiness", flush=True)
+    db.init_db(migrate=False, maintenance=False)
+    print(f"[startup] Database ready after {time.perf_counter() - startup_timer:.1f}s", flush=True)
+    print("[startup] Synchronizing basket file", flush=True)
     sync_basket_file()
+    print(f"[startup] Basket ready after {time.perf_counter() - startup_timer:.1f}s", flush=True)
     started_at = db.utc_now_iso()
     started_timer = time.perf_counter()
 
