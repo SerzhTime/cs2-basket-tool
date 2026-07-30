@@ -1862,24 +1862,51 @@ def render_update_runs_table() -> None:
     render_secondary_table(pd.DataFrame(summary_rows), "update_run_log")
 
     st.subheader("Latest Update Timing")
-    latest = rows[0]
-    steps = parse_update_steps(latest.get("step_details"))
-    if not steps:
-        st.caption("Detailed timing is not available for the latest update.")
+    latest_runs = latest_timing_runs(rows)
+    if not latest_runs:
+        st.caption("Detailed timing is not available for the latest price update or Neon sync.")
         return
-    timing_rows = [
-        {
-            "provider": step.get("provider_group", ""),
-            "step": step.get("step", "Update step"),
-            "duration (s)": format_decimal_seconds(step.get("duration_seconds")),
-            "elapsed (s)": format_decimal_seconds(step.get("elapsed_seconds")),
-            "received": step.get("received", ""),
-            "missing": step.get("missing", ""),
-            "errors": step.get("errors", ""),
-        }
-        for step in steps
-    ]
+    timing_rows = []
+    for operation, run in latest_runs:
+        steps = parse_update_steps(run.get("step_details")) or [
+            {
+                "step": "Completed",
+                "duration_seconds": run.get("duration_seconds"),
+                "elapsed_seconds": run.get("duration_seconds"),
+                "received": "",
+                "missing": "",
+                "errors": run.get("error_details", ""),
+            }
+        ]
+        timing_rows.extend(
+            {
+                "operation": operation,
+                "provider": step.get("provider_group", ""),
+                "step": step.get("step", "Update step"),
+                "duration (s)": format_decimal_seconds(step.get("duration_seconds")),
+                "elapsed (s)": format_decimal_seconds(step.get("elapsed_seconds")),
+                "received": step.get("received", ""),
+                "missing": step.get("missing", ""),
+                "errors": step.get("errors", ""),
+            }
+            for step in steps
+        )
     render_secondary_table(pd.DataFrame(timing_rows), "latest_update_timing")
+
+
+def latest_timing_runs(rows: list[dict]) -> list[tuple[str, dict]]:
+    """Return the most recent price update and Neon sync, in display order."""
+    latest_price = next(
+        (row for row in rows if row.get("source") in {"manual", "automatic"}),
+        None,
+    )
+    latest_sync = next((row for row in rows if row.get("source") == "sync"), None)
+    selected: list[tuple[str, dict]] = []
+    if latest_price:
+        selected.append((f"Price update ({latest_price['source']})", latest_price))
+    if latest_sync:
+        selected.append(("Neon sync", latest_sync))
+    return selected
 
 
 def parse_update_steps(value) -> list[dict]:
