@@ -6,6 +6,7 @@ from typing import Iterable
 import requests
 
 from .base import BasketItem, PriceResult, safe_error_details
+from .concurrency import map_concurrently
 
 
 class CSFloatAdapter:
@@ -22,43 +23,52 @@ class CSFloatAdapter:
         if not api_key:
             return [_error(item, "CSFLOAT_API_KEY is not configured.") for item in item_list]
 
-        results: list[PriceResult] = []
         headers = {"Authorization": api_key}
         timeout = float(os.getenv("CSFLOAT_TIMEOUT_SECONDS", "20"))
         limit = int(os.getenv("CSFLOAT_LIMIT", "5"))
-        for item in item_list:
-            try:
-                response = requests.get(
-                    os.getenv("CSFLOAT_LISTINGS_URL", "https://csfloat.com/api/v1/listings"),
-                    params={
-                        "limit": limit,
-                        "sort_by": "lowest_price",
-                        "type": "buy_now",
-                        "market_hash_name": item.market_hash_name,
-                    },
-                    headers=headers,
-                    timeout=timeout,
-                )
-                response.raise_for_status()
-                body = response.json()
-                listings = body.get("data") if isinstance(body, dict) else body
-                listing = _first_exact_listing(listings or [], item.market_hash_name)
-                price_cents = _float_or_none(listing.get("price") if listing else None)
-                stock_count = len(listings or []) if isinstance(listings, list) else None
-                results.append(
-                    PriceResult(
-                        marketplace=self.name,
-                        market_hash_name=item.market_hash_name,
-                        price=price_cents / 100.0 if price_cents is not None else None,
-                        currency="USD",
-                        stock_count=stock_count,
-                        fetch_status="ok" if price_cents is not None else "missing",
-                        error_details=None if price_cents is not None else "CSFloat returned no exact listing.",
-                    )
-                )
-            except Exception as exc:
-                results.append(_error(item, safe_error_details(exc)))
-        return results
+        workers = max(1, int(os.getenv("CSFLOAT_MAX_WORKERS", "6")))
+        return map_concurrently(
+            item_list,
+            workers,
+            lambda item: self._fetch_item_price(item, headers, timeout, limit),
+        )
+
+    def _fetch_item_price(
+        self,
+        item: BasketItem,
+        headers: dict[str, str],
+        timeout: float,
+        limit: int,
+    ) -> PriceResult:
+        try:
+            response = requests.get(
+                os.getenv("CSFLOAT_LISTINGS_URL", "https://csfloat.com/api/v1/listings"),
+                params={
+                    "limit": limit,
+                    "sort_by": "lowest_price",
+                    "type": "buy_now",
+                    "market_hash_name": item.market_hash_name,
+                },
+                headers=headers,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            listings = body.get("data") if isinstance(body, dict) else body
+            listing = _first_exact_listing(listings or [], item.market_hash_name)
+            price_cents = _float_or_none(listing.get("price") if listing else None)
+            stock_count = len(listings or []) if isinstance(listings, list) else None
+            return PriceResult(
+                marketplace=self.name,
+                market_hash_name=item.market_hash_name,
+                price=price_cents / 100.0 if price_cents is not None else None,
+                currency="USD",
+                stock_count=stock_count,
+                fetch_status="ok" if price_cents is not None else "missing",
+                error_details=None if price_cents is not None else "CSFloat returned no exact listing.",
+            )
+        except Exception as exc:
+            return _error(item, safe_error_details(exc))
 
 
 def _first_exact_listing(listings, market_hash_name: str):

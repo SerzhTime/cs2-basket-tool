@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-import time
 from typing import Any, Iterable
 
 import requests
 
 from .base import BasketItem, PriceResult
+from .concurrency import RequestRateLimiter, map_concurrently
 
 
 API_URL = "https://api.skindeck.com/secure/market"
@@ -37,20 +37,22 @@ class SkindeckAdapter:
                 for item in item_list
             ]
 
-        results: list[PriceResult] = []
-        for index, item in enumerate(item_list):
-            if index:
-                time.sleep(float(os.getenv("SKINDECK_DELAY_SECONDS", "0.05")))
-            results.append(self._fetch_item_price(item))
-        return results
+        workers = max(1, int(os.getenv("SKINDECK_MAX_WORKERS", "2")))
+        delay = max(0.0, float(os.getenv("SKINDECK_DELAY_SECONDS", "0.05")))
+        rate_limiter = RequestRateLimiter(1.0 / delay) if delay else None
+        return map_concurrently(
+            item_list,
+            workers,
+            lambda item: self._fetch_item_price(item, rate_limiter),
+        )
 
-    def _fetch_item_price(self, item: BasketItem) -> PriceResult:
+    def _fetch_item_price(self, item: BasketItem, rate_limiter: RequestRateLimiter | None) -> PriceResult:
         try:
-            rows = _request_market(item.market_hash_name)
+            rows = _request_market(item.market_hash_name, rate_limiter)
             exact = _exact_rows(rows, item.market_hash_name, item.market_hash_name)
             if not exact and _has_leading_star(item.market_hash_name):
                 search_name = _strip_leading_star(item.market_hash_name)
-                rows = _request_market(search_name)
+                rows = _request_market(search_name, rate_limiter)
                 exact = _exact_rows(rows, item.market_hash_name, search_name)
         except Exception as exc:
             return PriceResult(
@@ -85,7 +87,12 @@ class SkindeckAdapter:
         )
 
 
-def _request_market(search_name: str) -> list[dict[str, Any]]:
+def _request_market(
+    search_name: str,
+    rate_limiter: RequestRateLimiter | None = None,
+) -> list[dict[str, Any]]:
+    if rate_limiter is not None:
+        rate_limiter.wait()
     response = requests.get(
         os.getenv("SKINDECK_MARKET_URL", API_URL),
         params={

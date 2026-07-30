@@ -9,6 +9,7 @@ import requests
 from nacl.signing import SigningKey
 
 from .base import BasketItem, PriceResult, safe_error_details
+from .concurrency import RequestRateLimiter, map_concurrently
 
 
 class DMarketAdapter:
@@ -30,30 +31,34 @@ class DMarketAdapter:
                 for item in item_list
             ]
 
-        results: list[PriceResult] = []
-        for item in item_list:
-            try:
-                listing = _find_lowest_exact_listing(
-                    _dmarket_title(item.market_hash_name),
-                )
-                price_cents = _int_or_none(listing.get("priceCents") if listing else None)
-                results.append(
-                    PriceResult(
-                        marketplace=self.name,
-                        market_hash_name=item.market_hash_name,
-                        price=price_cents / 100.0 if price_cents is not None else None,
-                        currency="USD",
-                        stock_count=1 if price_cents is not None else 0,
-                        fetch_status="ok" if price_cents is not None else "missing",
-                        error_details=None if price_cents is not None else "DMarket v2 returned no exact lowest offer.",
-                    )
-                )
-            except Exception as exc:
-                results.append(_error(item, safe_error_details(exc)))
-        return results
+        workers = max(1, int(os.getenv("DMARKET_MAX_WORKERS", "8")))
+        rate_limiter = RequestRateLimiter(
+            max(0.1, float(os.getenv("DMARKET_MAX_REQUESTS_PER_SECOND", "8")))
+        )
+        return map_concurrently(
+            item_list,
+            workers,
+            lambda item: self._fetch_item_price(item, rate_limiter),
+        )
+
+    def _fetch_item_price(self, item: BasketItem, rate_limiter: RequestRateLimiter) -> PriceResult:
+        try:
+            listing = _find_lowest_exact_listing(_dmarket_title(item.market_hash_name), rate_limiter)
+            price_cents = _int_or_none(listing.get("priceCents") if listing else None)
+            return PriceResult(
+                marketplace=self.name,
+                market_hash_name=item.market_hash_name,
+                price=price_cents / 100.0 if price_cents is not None else None,
+                currency="USD",
+                stock_count=1 if price_cents is not None else 0,
+                fetch_status="ok" if price_cents is not None else "missing",
+                error_details=None if price_cents is not None else "DMarket v2 returned no exact lowest offer.",
+            )
+        except Exception as exc:
+            return _error(item, safe_error_details(exc))
 
 
-def _find_lowest_exact_listing(title: str):
+def _find_lowest_exact_listing(title: str, rate_limiter: RequestRateLimiter):
     params = {
         "gameId": os.getenv("DMARKET_GAME_ID", "a8db"),
         "title": title,
@@ -63,7 +68,7 @@ def _find_lowest_exact_listing(title: str):
     }
     max_pages = max(1, _int_or_none(os.getenv("DMARKET_MAX_PAGES_PER_ITEM")) or 3)
     for _ in range(max_pages):
-        body = _signed_get(_path(), params)
+        body = _signed_get(_path(), params, rate_limiter)
         for listing in body.get("items") or []:
             if isinstance(listing, dict) and _listing_title(listing) == title:
                 return listing
@@ -74,7 +79,8 @@ def _find_lowest_exact_listing(title: str):
     return None
 
 
-def _signed_get(path: str, params: dict[str, str]) -> dict:
+def _signed_get(path: str, params: dict[str, str], rate_limiter: RequestRateLimiter) -> dict:
+    rate_limiter.wait()
     query = urlencode(params, quote_via=quote)
     route = f"{path}?{query}"
     timestamp = str(int(time.time()))
