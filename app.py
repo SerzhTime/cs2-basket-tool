@@ -36,6 +36,7 @@ from calculations import (
     split_comparison_fixed_rows,
 )
 from services.basket_service import should_sync_basket_file_on_startup, sync_basket_file
+from services.background_price_update import BackgroundPriceUpdate
 from services.update_service import SnapshotQualityError, collect_snapshot, latest_update_step_details
 
 
@@ -89,6 +90,37 @@ MARKETPLACE_LOGO_FILES = {
     "Buff163": "buff163.webp",
     "YouPin": "youpin_clean.png",
     "Steam": "steam_clean.png",
+}
+
+# Fixed graph colors keep marketplace lines identifiable when filters or
+# time ranges change. Similar brands use separated shades of their logo family.
+MARKETPLACE_GRAPH_COLORS = {
+    "HaloSkins": "#FF6B21",
+    "CSFloat": "#DCE7F5",
+    "CS.MONEY": "#F43F9A",
+    "Market.CSGO": "#BBD1D6",
+    "DMarket": "#5BE49B",
+    "LIS-SKINS": "#F6C445",
+    "Tradeit.gg": "#7C6CF2",
+    "SkinSwap": "#E5484D",
+    "Skin.Land": "#A855F7",
+    "Avan.market": "#D4A72C",
+    "Aim.market": "#8B8DF8",
+    "SkinBaron": "#E5E7EB",
+    "SkinPlace": "#FB7043",
+    "ShadowPay": "#34D399",
+    "WAXPEER": "#C8D0DD",
+    "Waxpeer": "#C8D0DD",
+    "Skins.com": "#4ADE80",
+    "Skinvault": "#FDE047",
+    "UUSKINS": "#DFFF00",
+    "Exeskins": "#FACC15",
+    "C5Game": "#3B82F6",
+    "Skinport": "#22D3EE",
+    "Skindeck": "#A3E635",
+    "Buff163": "#4B5563",
+    "YouPin": "#AAB3C2",
+    "Steam": "#4AA3DF",
 }
 
 
@@ -290,6 +322,7 @@ def main() -> None:
                 key="update_prices_button",
                 type="primary",
                 use_container_width=True,
+                disabled=price_update_running(),
             )
         with title_cols[2]:
             st.markdown('<div class="header-button-spacer"></div>', unsafe_allow_html=True)
@@ -297,7 +330,11 @@ def main() -> None:
                 "Sync Neon",
                 key="sync_neon_button",
                 icon=":material/sync:",
-                disabled=not local_neon_sync_available() or automatic_neon_sync_busy(),
+                disabled=(
+                    not local_neon_sync_available()
+                    or automatic_neon_sync_busy()
+                    or price_update_running()
+                ),
                 help=(
                     "Two-way sync between local SQLite and Neon. "
                     "Available only in local SQLite mode with DATABASE_URL configured. "
@@ -306,21 +343,20 @@ def main() -> None:
             )
     st.markdown('<div class="app-sticky-header-spacer"></div>', unsafe_allow_html=True)
 
+    if sync_clicked:
+        suppress_pending_automatic_neon_sync()
+        perform_neon_sync("manual")
+        st.rerun()
+    if update_clicked:
+        if not background_price_update().start():
+            st.session_state.update_error = "Another price update is already running."
+        st.rerun()
+
     meta_cols = st.columns([6.9, 1.05, 0.32], vertical_alignment="top")
     with meta_cols[0]:
         render_last_updated_meta()
     with meta_cols[1]:
-        update_status_placeholder = st.empty()
-        header_status = None
-        if st.session_state.get("neon_sync_running"):
-            header_status = "Synchronizing local SQLite and Neon..."
-        elif sync_clicked:
-            header_status = "Synchronizing local SQLite and Neon..."
-        elif update_clicked:
-            header_status = "Skin prices received: 0 of 0."
-        elif automatic_neon_sync_busy():
-            header_status = "Synchronizing local SQLite and Neon..."
-        render_update_status(header_status, update_status_placeholder)
+        render_live_update_status()
 
     page_cols = st.columns([6.9, 1.05, 0.32], vertical_alignment="top")
     with page_cols[0]:
@@ -337,66 +373,7 @@ def main() -> None:
             label_visibility="collapsed",
         )
     with page_cols[1]:
-        market_status_placeholder = st.empty()
-        render_market_update_status(None, market_status_placeholder)
-
-    if sync_clicked:
-        suppress_pending_automatic_neon_sync()
-        perform_neon_sync("manual")
-        st.rerun()
-    if update_clicked:
-        started_at = db.utc_now_iso()
-        started_timer = time.perf_counter()
-
-        def show_price_progress(received: int, total: int, market: str = "") -> None:
-            render_update_status(
-                f"Skin prices received: {received:,} of {total:,}.",
-                update_status_placeholder,
-            )
-            render_market_update_status(market, market_status_placeholder)
-
-        try:
-            snapshot_id, timestamp, success_rate = collect_snapshot(show_price_progress)
-        except SnapshotQualityError as exc:
-            record_update_run_compat(
-                source="manual",
-                started_at=started_at,
-                finished_at=db.utc_now_iso(),
-                duration_seconds=time.perf_counter() - started_timer,
-                status="error",
-                error_details=safe_error_details(exc),
-                step_details=latest_update_step_details(),
-            )
-            st.session_state.update_error = safe_error_details(exc)
-        except Exception as exc:
-            record_update_run_compat(
-                source="manual",
-                started_at=started_at,
-                finished_at=db.utc_now_iso(),
-                duration_seconds=time.perf_counter() - started_timer,
-                status="error",
-                error_details=safe_error_details(exc),
-                step_details=latest_update_step_details(),
-            )
-            raise
-        else:
-            record_update_run_compat(
-                source="manual",
-                started_at=started_at,
-                finished_at=db.utc_now_iso(),
-                duration_seconds=time.perf_counter() - started_timer,
-                status="ok",
-                snapshot_id=snapshot_id,
-                success_rate=success_rate,
-                step_details=latest_update_step_details(),
-            )
-            st.session_state.update_notice = (
-                f"Saved snapshot #{snapshot_id} at {format_timestamp_utc8(timestamp)} "
-                f"({success_rate:.0%} data received)."
-            )
-            schedule_delayed_neon_sync()
-            clear_data_cache()
-        st.rerun()
+        render_live_market_update_status()
     if "update_notice" in st.session_state:
         st.toast(st.session_state.pop("update_notice"))
     if "update_error" in st.session_state:
@@ -1683,6 +1660,71 @@ def record_update_run_compat(**kwargs) -> None:
         reloaded_db.record_update_run(**kwargs)
 
 
+@st.cache_resource
+def background_price_update() -> BackgroundPriceUpdate:
+    return BackgroundPriceUpdate(
+        collect_snapshot=collect_snapshot,
+        latest_step_details=latest_update_step_details,
+        record_run=record_update_run_compat,
+        now=db.utc_now_iso,
+    )
+
+
+def price_update_state() -> dict:
+    return background_price_update().snapshot()
+
+
+def price_update_running() -> bool:
+    return price_update_state().get("status") == "running"
+
+
+def complete_background_price_update_if_needed() -> bool:
+    state = price_update_state()
+    if state.get("status") not in {"completed", "error"}:
+        return False
+    job_id = state.get("job_id")
+    if st.session_state.get("handled_price_update_job_id") == job_id:
+        return False
+
+    st.session_state.handled_price_update_job_id = job_id
+    if state["status"] == "completed":
+        snapshot_id = state.get("snapshot_id")
+        timestamp = state.get("timestamp")
+        success_rate = float(state.get("success_rate") or 0)
+        st.session_state.update_notice = (
+            f"Saved snapshot #{snapshot_id} at {format_timestamp_utc8(timestamp)} "
+            f"({success_rate:.0%} data received)."
+        )
+        if state.get("error_details"):
+            st.session_state.update_error = f"Snapshot saved, but update-run logging failed: {state['error_details']}"
+        schedule_delayed_neon_sync()
+        clear_data_cache()
+    else:
+        st.session_state.update_error = state.get("error_details") or "Price update failed."
+    return True
+
+
+@st.fragment(run_every=1.0)
+def render_live_update_status() -> None:
+    if complete_background_price_update_if_needed():
+        st.rerun()
+    state = price_update_state()
+    if state.get("status") == "running":
+        render_update_status(
+            f"Skin prices received: {int(state.get('received', 0)):,} of {int(state.get('total', 0)):,}.",
+        )
+    elif st.session_state.get("neon_sync_running") or automatic_neon_sync_busy():
+        render_update_status("Synchronizing local SQLite and Neon...")
+    else:
+        render_update_status()
+
+
+@st.fragment(run_every=1.0)
+def render_live_market_update_status() -> None:
+    state = price_update_state()
+    render_market_update_status(state.get("market") if state.get("status") == "running" else None)
+
+
 def render_fetch_status() -> None:
     st.subheader("Adapter Status")
     rows = [row for row in cached_marketplaces() if row["enabled"] or row["is_baseline"]]
@@ -1749,6 +1791,7 @@ def render_history() -> None:
         y="total_cost",
         color="marketplace",
         markers=True,
+        color_discrete_map=MARKETPLACE_GRAPH_COLORS,
         labels={
             "timestamp_utc8": "Timestamp (UTC+8)",
             "total_cost": "Total basket cost (USD)",
