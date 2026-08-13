@@ -5,6 +5,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from threading import Lock
 from typing import Iterable
 from urllib.parse import quote
 
@@ -12,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import BasketItem, PriceResult, safe_error_details
+from .concurrency import map_concurrently
 
 
 CSGOSKINS_MARKETS = [
@@ -31,7 +33,9 @@ CSGOSKINS_MARKETS = [
 ]
 
 _PAGE_CACHE: dict[str, dict[str, "_Offer"] | Exception] = {}
+_PAGE_CACHE_LOCK = Lock()
 _SESSION: requests.Session | None = None
+_SESSION_LOCK = Lock()
 
 
 class NoOffersParsedError(RuntimeError):
@@ -64,49 +68,43 @@ class CSGOSKINSMarketplaceAdapter:
         return True
 
     def fetch_prices(self, items: Iterable[BasketItem]) -> list[PriceResult]:
-        results: list[PriceResult] = []
-        for item in items:
-            if not item.price_compare_url:
-                results.append(
-                    PriceResult(
-                        marketplace=self.name,
-                        market_hash_name=item.market_hash_name,
-                        price=None,
-                        currency="USD",
-                        fetch_status="missing",
-                        error_details="No CSGOSKINS link is stored for this basket item.",
-                    )
-                )
-                continue
+        item_list = list(items)
+        workers = max(1, int(os.getenv("CSGOSKINS_MAX_WORKERS", "1")))
+        return map_concurrently(item_list, workers, self._fetch_item_price)
 
-            try:
-                offers = _load_offers(item.price_compare_url)
-            except Exception as exc:
-                results.append(
-                    PriceResult(
-                        marketplace=self.name,
-                        market_hash_name=item.market_hash_name,
-                        price=None,
-                        currency="USD",
-                        fetch_status="error",
-                        error_details=safe_error_details(exc),
-                    )
-                )
-                continue
-
-            offer = _find_offer(offers, self.aliases)
-            results.append(
-                PriceResult(
-                    marketplace=self.name,
-                    market_hash_name=item.market_hash_name,
-                    price=offer.price if offer else None,
-                    currency="USD",
-                    stock_count=offer.stock_count if offer else None,
-                    fetch_status="ok" if offer else "missing",
-                    error_details=None if offer else "CSGOSKINS page did not list this marketplace.",
-                )
+    def _fetch_item_price(self, item: BasketItem) -> PriceResult:
+        if not item.price_compare_url:
+            return PriceResult(
+                marketplace=self.name,
+                market_hash_name=item.market_hash_name,
+                price=None,
+                currency="USD",
+                fetch_status="missing",
+                error_details="No CSGOSKINS link is stored for this basket item.",
             )
-        return results
+
+        try:
+            offers = _load_offers(item.price_compare_url)
+        except Exception as exc:
+            return PriceResult(
+                marketplace=self.name,
+                market_hash_name=item.market_hash_name,
+                price=None,
+                currency="USD",
+                fetch_status="error",
+                error_details=safe_error_details(exc),
+            )
+
+        offer = _find_offer(offers, self.aliases)
+        return PriceResult(
+            marketplace=self.name,
+            market_hash_name=item.market_hash_name,
+            price=offer.price if offer else None,
+            currency="USD",
+            stock_count=offer.stock_count if offer else None,
+            fetch_status="ok" if offer else "missing",
+            error_details=None if offer else "CSGOSKINS page did not list this marketplace.",
+        )
 
 
 def build_csgoskins_adapters() -> list[CSGOSKINSMarketplaceAdapter]:
@@ -114,7 +112,8 @@ def build_csgoskins_adapters() -> list[CSGOSKINSMarketplaceAdapter]:
 
 
 def clear_csgoskins_cache() -> None:
-    _PAGE_CACHE.clear()
+    with _PAGE_CACHE_LOCK:
+        _PAGE_CACHE.clear()
 
 
 def csgoskins_offer(url: str, aliases: list[str]) -> CSGOSKINSOffer | None:
@@ -129,8 +128,9 @@ def csgoskins_offer(url: str, aliases: list[str]) -> CSGOSKINSOffer | None:
 
 
 def _load_offers(url: str) -> dict[str, _Offer]:
-    if url in _PAGE_CACHE:
-        cached = _PAGE_CACHE[url]
+    with _PAGE_CACHE_LOCK:
+        cached = _PAGE_CACHE.get(url)
+    if cached is not None:
         if isinstance(cached, Exception):
             raise cached
         return cached
@@ -140,7 +140,8 @@ def _load_offers(url: str) -> dict[str, _Offer]:
     for attempt in range(attempts):
         try:
             response, offers = _fetch_and_parse_offers(url)
-            _PAGE_CACHE[url] = offers
+            with _PAGE_CACHE_LOCK:
+                _PAGE_CACHE[url] = offers
             return offers
         except Exception as exc:
             last_error = exc
@@ -153,7 +154,8 @@ def _load_offers(url: str) -> dict[str, _Offer]:
                 time.sleep(delay + random.uniform(0, max(0.0, jitter)))
 
     error = last_error or RuntimeError("CSGOSKINS request failed.")
-    _PAGE_CACHE[url] = error
+    with _PAGE_CACHE_LOCK:
+        _PAGE_CACHE[url] = error
     raise error
 
 
@@ -230,20 +232,22 @@ def _is_reader_url(url: str) -> bool:
 
 def _session() -> requests.Session:
     global _SESSION
-    if _SESSION is None:
-        _SESSION = requests.Session()
-        _SESSION.headers.update(
-            {
-                "User-Agent": os.getenv(
-                    "CSGOSKINS_USER_AGENT",
-                    "Mozilla/5.0 (compatible; local-cs2-basket-tool/1.0)",
-                ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://csgoskins.gg/",
-            }
-        )
-    return _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is None:
+            session = requests.Session()
+            session.headers.update(
+                {
+                    "User-Agent": os.getenv(
+                        "CSGOSKINS_USER_AGENT",
+                        "Mozilla/5.0 (compatible; local-cs2-basket-tool/1.0)",
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://csgoskins.gg/",
+                }
+            )
+            _SESSION = session
+        return _SESSION
 
 
 def _parse_offers(html: str) -> dict[str, _Offer]:

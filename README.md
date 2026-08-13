@@ -81,6 +81,8 @@ The database keeps all historical snapshots. Disabling a basket item only affect
 - `snapshots`: snapshot id and timestamp
 - `price_points`: one marketplace/item result per snapshot, including price, currency, stock count, status, and error details
 
+`price_points` keeps only the indexes actually needed for lookups (`snapshot_id, marketplace, item_id`), history queries (`marketplace, timestamp`), and the uniqueness constraint. Two previously redundant indexes were removed since they duplicated coverage the remaining indexes already provide; `init_db` drops them automatically on an existing database the next time it runs. Run a manual `VACUUM` (SQLite) after a fresh app start if you want to reclaim the freed disk space immediately instead of waiting for normal file growth to reuse it.
+
 ## Adapter contract
 
 Each adapter returns normalized `PriceResult` rows:
@@ -130,13 +132,16 @@ Use `{item}` for URL-encoded exact `market_hash_name`, or `{item_raw}` only when
 
 ## CSGOSKINS page-backed sources
 
-The CSGOSKINS adapters read the `CSGOSKINS links` column from `data/basket.xlsx`. During one update, each item page is fetched once and cached across all CSGOSKINS-backed marketplaces. Requests use randomized delays configured by:
+The CSGOSKINS adapters read the `CSGOSKINS links` column from `data/basket.xlsx`. During one update, each item page is fetched once and cached across all CSGOSKINS-backed marketplaces. `CSGOSKINS_MAX_WORKERS` fetches that many item pages concurrently; each worker still waits its own randomized delay between requests:
 
 ```dotenv
+CSGOSKINS_MAX_WORKERS=3
 CSGOSKINS_DELAY_SECONDS=4.0
 CSGOSKINS_DELAY_JITTER_SECONDS=4.0
 CSGOSKINS_RETRIES=0
 ```
+
+Tested live against the real site up to 6 concurrent workers with zero errors; `3` is the shipped default and cut a full 40-item basket's CSGOSKINS phase from roughly 6-10 minutes (sequential) to about 90 seconds. Raise it further only if you've confirmed it stays error-free for your basket size.
 
 If CSGOSKINS blocks requests or a marketplace is missing on a page, the row is stored as missing and the comparison table uses the HaloSkins fallback price for totals.
 
@@ -146,13 +151,17 @@ SteamAnalyst links are stored per basket item and used only after primary source
 
 PriceEmpire links are stored from the workbook but are not active as a live backup yet. Direct requests currently return a challenge page, and reader output did not expose reliable marketplace prices during testing.
 
-SteamAnalyst backup values are sanity-checked against HaloSkins when available to reduce phase/variant mismatch risk. Configure with:
+SteamAnalyst backup values are sanity-checked against HaloSkins when available to reduce phase/variant mismatch risk. `STEAMANALYST_MAX_WORKERS` resolves that many still-missing rows concurrently, sharing one rate limiter (also used by the PriceEmpire path) so update starts stay paced at `STEAMANALYST_DELAY_SECONDS`. Configure with:
 
 ```dotenv
 STEAMANALYST_BACKUP_ENABLED=1
+STEAMANALYST_MAX_WORKERS=2
+STEAMANALYST_DELAY_SECONDS=0.75
 STEAMANALYST_BACKUP_MIN_BASELINE_RATIO=0.1
 STEAMANALYST_BACKUP_MAX_BASELINE_RATIO=4.0
 ```
+
+Tested live at up to 3 workers with zero errors; throughput plateaus at 2 workers since the shared rate limiter caps request starts, so `2` is the shipped default. On a full 40-item basket this cut the "Fallback recovery" step from about 15 seconds (sequential-equivalent) to about 6-7 seconds per 8 items tested, roughly 36 seconds for the full basket.
 
 ## Manual Missing-Price Repair
 

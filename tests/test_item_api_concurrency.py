@@ -5,9 +5,11 @@ import time
 import unittest
 from unittest.mock import patch
 
-from adapters.base import BasketItem
+from adapters.base import BasketItem, PriceResult
+from adapters.backup_sources import BackupOffer, apply_backup_prices, clear_backup_cache
 from adapters.concurrency import map_concurrently
 from adapters.csfloat import CSFloatAdapter
+from adapters.csgoskins import CSGOSKINSMarketplaceAdapter, clear_csgoskins_cache
 from adapters.dmarket import DMarketAdapter
 from adapters.skindeck import SkindeckAdapter
 
@@ -80,6 +82,62 @@ class ItemApiConcurrencyTests(unittest.TestCase):
 
         self.assertEqual([result.market_hash_name for result in results], [item.market_hash_name for item in ITEMS])
         self.assertTrue(all(result.fetch_status == "ok" for result in results))
+
+    def test_csgoskins_parallel_fetch_preserves_result_order(self) -> None:
+        items = [
+            BasketItem(index, f"Item {index}", price_compare_url=f"https://csgoskins.gg/item-{index}")
+            for index in range(1, 5)
+        ]
+
+        def load_offers(url: str):
+            return {"csmoney": type("Offer", (), {"marketplace": "CS.MONEY", "price": 1.23, "stock_count": 1})()}
+
+        clear_csgoskins_cache()
+        try:
+            with patch.dict(
+                os.environ,
+                {"CSGOSKINS_MAX_WORKERS": "4", "CSGOSKINS_DELAY_SECONDS": "0", "CSGOSKINS_DELAY_JITTER_SECONDS": "0"},
+                clear=False,
+            ), patch("adapters.csgoskins._load_offers", side_effect=load_offers):
+                adapter = CSGOSKINSMarketplaceAdapter("csgoskins_csmoney", "CS.MONEY", ["CS.MONEY"])
+                results = adapter.fetch_prices(items)
+        finally:
+            clear_csgoskins_cache()
+
+        self.assertEqual([result.market_hash_name for result in results], [item.market_hash_name for item in items])
+        self.assertTrue(all(result.fetch_status == "ok" for result in results))
+
+    def test_backup_prices_resolve_concurrently_and_preserve_order(self) -> None:
+        items = [
+            BasketItem(index, f"Item {index}", steamanalyst_url=f"https://steamanalyst.com/item-{index}")
+            for index in range(1, 5)
+        ]
+        results = [
+            PriceResult(
+                marketplace="Tradeit.gg",
+                market_hash_name=item.market_hash_name,
+                price=None,
+                fetch_status="missing",
+            )
+            for item in items
+        ]
+
+        def load_offers(_url: str, _rate_limiter):
+            return {"Tradeit.gg": BackupOffer(marketplace="Tradeit.gg", price=1.23, source="SteamAnalyst")}
+
+        clear_backup_cache()
+        try:
+            with patch.dict(
+                os.environ,
+                {"STEAMANALYST_MAX_WORKERS": "4", "STEAMANALYST_DELAY_SECONDS": "0"},
+                clear=False,
+            ), patch("adapters.backup_sources._load_steamanalyst_offers", side_effect=load_offers):
+                updated = apply_backup_prices(results, items)
+        finally:
+            clear_backup_cache()
+
+        self.assertEqual([r.market_hash_name for r in updated], [item.market_hash_name for item in items])
+        self.assertTrue(all(r.fetch_status == "ok" and r.price == 1.23 for r in updated))
 
 
 if __name__ == "__main__":

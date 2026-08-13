@@ -212,6 +212,7 @@ def init_db(*, migrate: bool = True, maintenance: bool = True) -> None:
         if migrate:
             con.executescript(_schema_sql())
             ensure_price_point_uniqueness(con)
+            drop_redundant_price_point_indexes(con)
             ensure_column(con, "basket_items", "multiplier", "INTEGER NOT NULL DEFAULT 1")
             ensure_column(con, "basket_items", "price_compare_url", "TEXT")
             ensure_column(con, "basket_items", "priceempire_url", "TEXT")
@@ -278,12 +279,8 @@ def _schema_sql(backend: str | None = None) -> str:
                 timestamp TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_price_points_snapshot
-                ON price_points(snapshot_id, marketplace);
             CREATE INDEX IF NOT EXISTS idx_price_points_snapshot_market_item
                 ON price_points(snapshot_id, marketplace, item_id);
-            CREATE INDEX IF NOT EXISTS idx_price_points_snapshot_market_hash
-                ON price_points(snapshot_id, marketplace, market_hash_name);
             CREATE INDEX IF NOT EXISTS idx_price_points_history
                 ON price_points(marketplace, timestamp);
             CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp
@@ -368,12 +365,8 @@ def _schema_sql(backend: str | None = None) -> str:
             FOREIGN KEY(item_id) REFERENCES basket_items(item_id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_price_points_snapshot
-            ON price_points(snapshot_id, marketplace);
         CREATE INDEX IF NOT EXISTS idx_price_points_snapshot_market_item
             ON price_points(snapshot_id, marketplace, item_id);
-        CREATE INDEX IF NOT EXISTS idx_price_points_snapshot_market_hash
-            ON price_points(snapshot_id, marketplace, market_hash_name);
         CREATE INDEX IF NOT EXISTS idx_price_points_history
             ON price_points(marketplace, timestamp);
         CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp
@@ -423,6 +416,20 @@ def ensure_column(con: DbConnection, table: str, column: str, definition: str) -
         columns = {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {_pg_column_definition(definition)}")
+
+
+def drop_redundant_price_point_indexes(con: DbConnection) -> None:
+    """Drop price_points indexes superseded by other indexes on the same table.
+
+    idx_price_points_snapshot(snapshot_id, marketplace) is a strict column
+    prefix of idx_price_points_snapshot_market_item, and
+    idx_price_points_snapshot_market_hash duplicates the column list of the
+    uq_price_points_snapshot_market_hash unique index. Both are safe to drop:
+    no query loses index coverage, only redundant on-disk index storage
+    shrinks.
+    """
+    con.execute("DROP INDEX IF EXISTS idx_price_points_snapshot")
+    con.execute("DROP INDEX IF EXISTS idx_price_points_snapshot_market_hash")
 
 
 def ensure_price_point_uniqueness(con: DbConnection) -> None:

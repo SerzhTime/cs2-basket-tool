@@ -4,6 +4,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from threading import Lock
 from typing import Iterable
 from urllib.parse import urlparse
 
@@ -11,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import BasketItem, PriceResult
+from .concurrency import RequestRateLimiter, map_concurrently
 from .csgoskins import csgoskins_offer
 
 
@@ -42,6 +44,8 @@ PRICEEMPIRE_BACKUP_NAMES = {
 
 _STEAMANALYST_CACHE: dict[str, dict[str, "BackupOffer"] | Exception] = {}
 _PRICEEMPIRE_CACHE: dict[str, dict[str, "BackupOffer"] | Exception] = {}
+_STEAMANALYST_CACHE_LOCK = Lock()
+_PRICEEMPIRE_CACHE_LOCK = Lock()
 
 
 @dataclass(frozen=True)
@@ -67,61 +71,72 @@ def apply_backup_prices(
         if result.marketplace == "HaloSkins" and _successful(result)
     }
 
-    updated: list[PriceResult] = []
-    for result in results:
-        if deadline is not None and time.monotonic() >= deadline:
-            updated.append(result)
-            continue
+    candidates: list[tuple[int, PriceResult, BasketItem]] = []
+    for index, result in enumerate(results):
         if _successful(result) or result.marketplace == "HaloSkins":
-            updated.append(result)
             continue
-
         item = items_by_name.get(result.market_hash_name)
         if item is None:
-            updated.append(result)
             continue
+        candidates.append((index, result, item))
 
-        offer = _backup_offer(item, result.marketplace)
+    updated = list(results)
+    if not candidates:
+        return updated
+
+    workers = max(1, int(os.getenv("STEAMANALYST_MAX_WORKERS", "2")))
+    delay = max(0.0, float(os.getenv("STEAMANALYST_DELAY_SECONDS", "0.75")))
+    rate_limiter = RequestRateLimiter(1.0 / delay) if delay else None
+
+    def resolve(candidate: tuple[int, PriceResult, BasketItem]) -> PriceResult | None:
+        _index, result, item = candidate
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+
+        offer = _backup_offer(item, result.marketplace, rate_limiter)
         if offer is None:
-            updated.append(result)
-            continue
+            return None
 
         baseline = baseline_prices.get(result.market_hash_name)
         if baseline is not None and not _passes_baseline_sanity(offer.price, baseline):
-            updated.append(result)
-            continue
+            return None
 
-        updated.append(
-            PriceResult(
-                marketplace=result.marketplace,
-                market_hash_name=result.market_hash_name,
-                price=offer.price,
-                currency="USD",
-                stock_count=result.stock_count,
-                fetch_status="ok",
-                error_details=(
-                    f"Backup from {offer.source} after primary {result.fetch_status}: "
-                    f"{result.error_details or 'no primary price'}"
-                ),
-            )
+        return PriceResult(
+            marketplace=result.marketplace,
+            market_hash_name=result.market_hash_name,
+            price=offer.price,
+            currency="USD",
+            stock_count=result.stock_count,
+            fetch_status="ok",
+            error_details=(
+                f"Backup from {offer.source} after primary {result.fetch_status}: "
+                f"{result.error_details or 'no primary price'}"
+            ),
         )
+
+    resolved = map_concurrently(candidates, workers, resolve)
+    for (index, _result, _item), replacement in zip(candidates, resolved):
+        if replacement is not None:
+            updated[index] = replacement
     return updated
 
 
 def clear_backup_cache() -> None:
-    _STEAMANALYST_CACHE.clear()
-    _PRICEEMPIRE_CACHE.clear()
+    with _STEAMANALYST_CACHE_LOCK:
+        _STEAMANALYST_CACHE.clear()
+    with _PRICEEMPIRE_CACHE_LOCK:
+        _PRICEEMPIRE_CACHE.clear()
 
 
-def _backup_offer(item: BasketItem, marketplace: str) -> BackupOffer | None:
+def _backup_offer(item: BasketItem, marketplace: str, rate_limiter: RequestRateLimiter | None = None) -> BackupOffer | None:
     offer = _csgoskins_offer(item, marketplace)
     if offer is not None:
         return offer
-    offer = _priceempire_offer(item, marketplace)
+    offer = _priceempire_offer(item, marketplace, rate_limiter)
     if offer is not None:
         return offer
     if item.steamanalyst_url:
-        return _steamanalyst_offer(item.steamanalyst_url, marketplace)
+        return _steamanalyst_offer(item.steamanalyst_url, marketplace, rate_limiter)
     return None
 
 
@@ -138,12 +153,12 @@ def _csgoskins_offer(item: BasketItem, marketplace: str) -> BackupOffer | None:
     return BackupOffer(marketplace=marketplace, price=offer.price, source=f"CSGOSKINS {offer.marketplace}")
 
 
-def _priceempire_offer(item: BasketItem, marketplace: str) -> BackupOffer | None:
+def _priceempire_offer(item: BasketItem, marketplace: str, rate_limiter: RequestRateLimiter | None) -> BackupOffer | None:
     names = PRICEEMPIRE_BACKUP_NAMES.get(marketplace)
     if not names or not item.priceempire_url:
         return None
     try:
-        offers = _load_priceempire_offers(item.priceempire_url)
+        offers = _load_priceempire_offers(item.priceempire_url, rate_limiter)
     except Exception:
         return None
     for name in names:
@@ -153,13 +168,16 @@ def _priceempire_offer(item: BasketItem, marketplace: str) -> BackupOffer | None
     return None
 
 
-def _load_priceempire_offers(url: str) -> dict[str, BackupOffer]:
-    if url in _PRICEEMPIRE_CACHE:
-        cached = _PRICEEMPIRE_CACHE[url]
+def _load_priceempire_offers(url: str, rate_limiter: RequestRateLimiter | None) -> dict[str, BackupOffer]:
+    with _PRICEEMPIRE_CACHE_LOCK:
+        cached = _PRICEEMPIRE_CACHE.get(url)
+    if cached is not None:
         if isinstance(cached, Exception):
             raise cached
         return cached
 
+    if rate_limiter is not None:
+        rate_limiter.wait()
     try:
         response = requests.get(
             url,
@@ -177,15 +195,13 @@ def _load_priceempire_offers(url: str) -> dict[str, BackupOffer]:
         offers = _parse_priceempire_offers(response.text)
         if not offers:
             raise RuntimeError("PriceEmpire page returned no parseable listing offers.")
-        _PRICEEMPIRE_CACHE[url] = offers
+        with _PRICEEMPIRE_CACHE_LOCK:
+            _PRICEEMPIRE_CACHE[url] = offers
         return offers
     except Exception as exc:
-        _PRICEEMPIRE_CACHE[url] = exc
+        with _PRICEEMPIRE_CACHE_LOCK:
+            _PRICEEMPIRE_CACHE[url] = exc
         raise
-    finally:
-        delay = float(os.getenv("PRICEEMPIRE_DELAY_SECONDS", "0.75"))
-        if delay > 0:
-            time.sleep(delay)
 
 
 def _parse_priceempire_offers(html: str) -> dict[str, BackupOffer]:
@@ -208,21 +224,24 @@ def _parse_priceempire_offers(html: str) -> dict[str, BackupOffer]:
     return offers
 
 
-def _steamanalyst_offer(url: str, marketplace: str) -> BackupOffer | None:
+def _steamanalyst_offer(url: str, marketplace: str, rate_limiter: RequestRateLimiter | None) -> BackupOffer | None:
     try:
-        offers = _load_steamanalyst_offers(url)
+        offers = _load_steamanalyst_offers(url, rate_limiter)
     except Exception:
         return None
     return offers.get(marketplace)
 
 
-def _load_steamanalyst_offers(url: str) -> dict[str, BackupOffer]:
-    if url in _STEAMANALYST_CACHE:
-        cached = _STEAMANALYST_CACHE[url]
+def _load_steamanalyst_offers(url: str, rate_limiter: RequestRateLimiter | None) -> dict[str, BackupOffer]:
+    with _STEAMANALYST_CACHE_LOCK:
+        cached = _STEAMANALYST_CACHE.get(url)
+    if cached is not None:
         if isinstance(cached, Exception):
             raise cached
         return cached
 
+    if rate_limiter is not None:
+        rate_limiter.wait()
     try:
         response = requests.get(
             url,
@@ -240,15 +259,13 @@ def _load_steamanalyst_offers(url: str) -> dict[str, BackupOffer]:
         offers = _parse_steamanalyst_offers(response.text)
         if not offers:
             raise RuntimeError("SteamAnalyst page returned no parseable marketplace rows.")
-        _STEAMANALYST_CACHE[url] = offers
+        with _STEAMANALYST_CACHE_LOCK:
+            _STEAMANALYST_CACHE[url] = offers
         return offers
     except Exception as exc:
-        _STEAMANALYST_CACHE[url] = exc
+        with _STEAMANALYST_CACHE_LOCK:
+            _STEAMANALYST_CACHE[url] = exc
         raise
-    finally:
-        delay = float(os.getenv("STEAMANALYST_DELAY_SECONDS", "0.75"))
-        if delay > 0:
-            time.sleep(delay)
 
 
 def _parse_steamanalyst_offers(html: str) -> dict[str, BackupOffer]:
