@@ -33,8 +33,26 @@ class NeonSyncManifestTests(unittest.TestCase):
 
             self.assertEqual(manifest["snapshot_signatures"], {"snapshot": "fingerprint"})
             self.assertEqual(manifest["local_revision"], {"price_history.sqlite": 1})
+            self.assertIsNone(manifest["update_runs_push_cursor"])
+            self.assertIsNone(manifest["update_runs_pull_cursor"])
             self.assertFalse(db._neon_full_reconcile_due(manifest))
             self.assertTrue(db._neon_full_reconcile_due({"last_full_reconciled_at": 0}))
+
+    def test_manifest_round_trips_update_runs_cursors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest_path = Path(temporary_directory) / "manifest.json"
+            with patch.object(db, "NEON_SYNC_MANIFEST_PATH", manifest_path):
+                db._save_neon_sync_manifest(
+                    {},
+                    full_reconciled_at=time.time(),
+                    local_revision={},
+                    update_runs_push_cursor="2026-08-13T00:00:00.000+00:00",
+                    update_runs_pull_cursor="2026-08-12T23:00:00.000+00:00",
+                )
+                manifest = db._load_neon_sync_manifest()
+
+            self.assertEqual(manifest["update_runs_push_cursor"], "2026-08-13T00:00:00.000+00:00")
+            self.assertEqual(manifest["update_runs_pull_cursor"], "2026-08-12T23:00:00.000+00:00")
 
 
 if __name__ == "__main__":

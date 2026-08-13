@@ -91,10 +91,10 @@ class DbConnection:
         if self.backend == "sqlite":
             self.raw.executescript(sql)
             return
-        for statement in sql.split(";"):
-            statement = statement.strip()
-            if statement:
-                self.raw.execute(statement)
+        # psycopg sends a parameter-free multi-statement string via the
+        # simple query protocol in one round trip, instead of one per
+        # semicolon-separated statement.
+        self.raw.execute(sql)
 
     def commit(self) -> None:
         self.raw.commit()
@@ -219,6 +219,7 @@ def init_db(*, migrate: bool = True, maintenance: bool = True) -> None:
             ensure_column(con, "basket_items", "steamanalyst_url", "TEXT")
             ensure_column(con, "basket_items", "marketplace_links_json", "TEXT")
             ensure_column(con, "update_runs", "step_details", "TEXT")
+            ensure_update_run_uniqueness(con)
         else:
             # Fail quickly and clearly if the database was never initialized.
             con.execute("SELECT 1 FROM basket_items LIMIT 1")
@@ -476,6 +477,53 @@ def _price_point_unique_index_exists(con: DbConnection) -> bool:
     return any(
         row["name"] == "uq_price_points_snapshot_market_hash"
         for row in con.execute("PRAGMA index_list(price_points)").fetchall()
+    )
+
+
+def ensure_update_run_uniqueness(con: DbConnection) -> None:
+    if _update_run_unique_index_exists(con):
+        return
+    con.execute(
+        """
+        DELETE FROM update_runs
+        WHERE update_run_id IN (
+            SELECT update_run_id
+            FROM (
+                SELECT
+                    update_run_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY source, started_at
+                        ORDER BY update_run_id DESC
+                    ) AS duplicate_rank
+                FROM update_runs
+            ) ranked
+            WHERE duplicate_rank > 1
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_update_runs_source_started
+        ON update_runs(source, started_at)
+        """
+    )
+
+
+def _update_run_unique_index_exists(con: DbConnection) -> bool:
+    if con.backend == "postgres":
+        row = con.execute(
+            """
+            SELECT 1
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND indexname = ?
+            """,
+            ("uq_update_runs_source_started",),
+        ).fetchone()
+        return row is not None
+    return any(
+        row["name"] == "uq_update_runs_source_started"
+        for row in con.execute("PRAGMA index_list(update_runs)").fetchall()
     )
 
 
@@ -1269,16 +1317,26 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
             _acquire_postgres_sync_lock(target)
             target.executescript(_schema_sql("postgres"))
             ensure_price_point_uniqueness(target)
+            ensure_update_run_uniqueness(target)
             target.execute("ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS step_details TEXT")
             _sync_basket_items_to_postgres(source, target, counts)
             _sync_marketplaces_to_postgres(source, target, counts)
-            _sync_update_runs_to_postgres(source, target, counts)
+            update_runs_push_cursor = _sync_update_runs_to_postgres(
+                source,
+                target,
+                counts,
+                since=None if force_full_reconcile else manifest.get("update_runs_push_cursor"),
+            )
             synced_manifest = manifest["snapshot_signatures"]
             if local_data_changed or force_full_reconcile:
-                local_snapshots = _sqlite_snapshot_states(source)
-                remote_snapshots = _postgres_snapshot_metadata(target)
-                remote_signatures = (
-                    _postgres_snapshot_signatures(target) if force_full_reconcile else {}
+                if force_full_reconcile:
+                    local_snapshots = _sqlite_snapshot_states(source)
+                    remote_signatures = _postgres_snapshot_signatures(target)
+                else:
+                    local_snapshots = _sqlite_snapshots_needing_check(source, manifest["snapshot_signatures"])
+                    remote_signatures = {}
+                remote_snapshots = _postgres_snapshot_metadata(
+                    target, timestamps=None if force_full_reconcile else list(local_snapshots)
                 )
                 item_map = {
                     row["market_hash_name"]: int(row["item_id"])
@@ -1336,12 +1394,26 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
                         )
                     counts["snapshots"] += 1
                     counts["price_points"] += len(batch)
-                synced_manifest = {
-                    timestamp: str(snapshot["signature"])
-                    for timestamp, snapshot in local_snapshots.items()
-                }
+                if force_full_reconcile:
+                    synced_manifest = {
+                        timestamp: str(snapshot["signature"])
+                        for timestamp, snapshot in local_snapshots.items()
+                    }
+                else:
+                    synced_manifest = dict(manifest["snapshot_signatures"])
+                    synced_manifest.update(
+                        {
+                            timestamp: str(snapshot["signature"])
+                            for timestamp, snapshot in local_snapshots.items()
+                        }
+                    )
             _sync_missing_postgres_snapshots_to_sqlite(source, target, counts)
-            _sync_missing_postgres_update_runs_to_sqlite(source, target, counts)
+            update_runs_pull_cursor = _sync_missing_postgres_update_runs_to_sqlite(
+                source,
+                target,
+                counts,
+                since=None if force_full_reconcile else manifest.get("update_runs_pull_cursor"),
+            )
             source.commit()
             if counts["pulled_snapshots"]:
                 synced_manifest = _sqlite_snapshot_signatures(source)
@@ -1351,6 +1423,8 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
         synced_manifest,
         full_reconciled_at=time.time() if force_full_reconcile else manifest.get("last_full_reconciled_at"),
         local_revision=_local_sync_revision(),
+        update_runs_push_cursor=update_runs_push_cursor,
+        update_runs_pull_cursor=update_runs_pull_cursor,
     )
     return counts
 
@@ -1388,6 +1462,8 @@ def _load_neon_sync_manifest() -> dict:
         },
         "last_full_reconciled_at": payload.get("last_full_reconciled_at"),
         "local_revision": payload.get("local_revision"),
+        "update_runs_push_cursor": payload.get("update_runs_push_cursor"),
+        "update_runs_pull_cursor": payload.get("update_runs_pull_cursor"),
     }
 
 
@@ -1396,11 +1472,15 @@ def _save_neon_sync_manifest(
     *,
     full_reconciled_at,
     local_revision: dict[str, int],
+    update_runs_push_cursor: str | None = None,
+    update_runs_pull_cursor: str | None = None,
 ) -> None:
     payload = {
         "snapshot_signatures": snapshot_signatures,
         "last_full_reconciled_at": full_reconciled_at,
         "local_revision": local_revision,
+        "update_runs_push_cursor": update_runs_push_cursor,
+        "update_runs_pull_cursor": update_runs_pull_cursor,
     }
     try:
         NEON_SYNC_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1445,6 +1525,38 @@ def _sqlite_snapshot_states(source: sqlite3.Connection) -> dict[str, dict[str, i
     return snapshots
 
 
+def _sqlite_snapshots_needing_check(
+    source: sqlite3.Connection, cached_signatures: dict[str, str]
+) -> dict[str, dict[str, int | str]]:
+    """Re-hash only snapshots not yet in the manifest cache, plus the latest one.
+
+    Snapshots are immutable once a newer one exists, except the single most
+    recent snapshot which "Repair Missing Marketplace Prices" can update in
+    place. Trusting the cache for everything else turns a full rescan of
+    every historical snapshot into checking just what's new since the last
+    sync (see db.py's Neon sync notes for the full reasoning).
+    """
+    local_ids = source.execute("SELECT snapshot_id, timestamp FROM snapshots ORDER BY snapshot_id").fetchall()
+    latest_timestamp = str(local_ids[-1]["timestamp"]) if local_ids else None
+    must_check_timestamps = {
+        str(row["timestamp"])
+        for row in local_ids
+        if str(row["timestamp"]) not in cached_signatures or str(row["timestamp"]) == latest_timestamp
+    }
+    snapshots: dict[str, dict[str, int | str]] = {}
+    for row in local_ids:
+        timestamp = str(row["timestamp"])
+        if timestamp not in must_check_timestamps:
+            continue
+        values = _sqlite_snapshot_point_values(source, int(row["snapshot_id"]))
+        snapshots[timestamp] = {
+            "snapshot_id": int(row["snapshot_id"]),
+            "signature": _snapshot_signature(values),
+            "point_count": len(values),
+        }
+    return snapshots
+
+
 def _local_sync_revision() -> dict[str, int]:
     paths = (DB_PATH, DB_PATH.with_name(f"{DB_PATH.name}-wal"))
     revision: dict[str, int] = {}
@@ -1458,16 +1570,23 @@ def _local_sync_revision() -> dict[str, int]:
     return revision
 
 
-def _postgres_snapshot_metadata(target: DbConnection) -> dict[str, dict[str, int]]:
-    rows = target.execute(
-        """
+def _postgres_snapshot_metadata(
+    target: DbConnection, timestamps: list[str] | None = None
+) -> dict[str, dict[str, int]]:
+    if timestamps is not None and not timestamps:
+        return {}
+    query = """
         SELECT s.snapshot_id, s.timestamp, COUNT(pp.price_point_id) AS point_count
         FROM snapshots s
         LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
-        GROUP BY s.snapshot_id, s.timestamp
-        ORDER BY s.snapshot_id
-        """
-    ).fetchall()
+    """
+    params: tuple = ()
+    if timestamps is not None:
+        placeholders = ",".join("?" for _ in timestamps)
+        query += f" WHERE s.timestamp IN ({placeholders})"
+        params = tuple(timestamps)
+    query += " GROUP BY s.snapshot_id, s.timestamp ORDER BY s.snapshot_id"
+    rows = target.execute(query, params).fetchall()
     return {
         str(row["timestamp"]): {
             "snapshot_id": int(row["snapshot_id"]),
@@ -1607,171 +1726,184 @@ def _sync_missing_postgres_snapshots_to_sqlite(
         counts["pulled_price_points"] += len(batch)
 
 
-def _sync_update_runs_to_postgres(source: sqlite3.Connection, target: DbConnection, counts: dict[str, int]) -> None:
-    for row in source.execute("SELECT * FROM update_runs ORDER BY started_at, update_run_id"):
-        existing = target.execute(
-            """
-            SELECT update_run_id
-            FROM update_runs
-            WHERE source = ? AND started_at = ? AND finished_at = ?
-            LIMIT 1
-            """,
-            (row["source"], row["started_at"], row["finished_at"]),
-        ).fetchone()
-        if existing:
-            target.execute(
-                """
-                UPDATE update_runs
-                SET duration_seconds = ?,
-                    status = ?,
-                    snapshot_id = ?,
-                    success_rate = ?,
-                    error_details = ?,
-                    step_details = ?
-                WHERE update_run_id = ?
-                """,
-                (
-                    _float_or_none(row["duration_seconds"]) or 0.0,
-                    row["status"],
-                    _int_or_none(row["snapshot_id"]),
-                    _float_or_none(row["success_rate"]),
-                    _none_if_blank(row["error_details"]),
-                    _none_if_blank(row["step_details"]),
-                    existing["update_run_id"],
-                ),
-            )
-        else:
-            target.execute(
-                """
-                INSERT INTO update_runs (
-                    source, started_at, finished_at, duration_seconds, status,
-                    snapshot_id, success_rate, error_details, step_details
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["source"],
-                    row["started_at"],
-                    row["finished_at"],
-                    _float_or_none(row["duration_seconds"]) or 0.0,
-                    row["status"],
-                    _int_or_none(row["snapshot_id"]),
-                    _float_or_none(row["success_rate"]),
-                    _none_if_blank(row["error_details"]),
-                    _none_if_blank(row["step_details"]),
-                ),
-            )
-        counts["update_runs"] += 1
+def _sync_update_runs_to_postgres(
+    source: sqlite3.Connection,
+    target: DbConnection,
+    counts: dict[str, int],
+    *,
+    since: str | None,
+) -> str | None:
+    query = "SELECT * FROM update_runs"
+    params: tuple = ()
+    if since is not None:
+        query += " WHERE started_at > ?"
+        params = (since,)
+    query += " ORDER BY started_at, update_run_id"
+    rows = source.execute(query, params).fetchall()
+    if not rows:
+        return since
+
+    batch = [
+        (
+            row["source"],
+            row["started_at"],
+            row["finished_at"],
+            _float_or_none(row["duration_seconds"]) or 0.0,
+            row["status"],
+            _int_or_none(row["snapshot_id"]),
+            _float_or_none(row["success_rate"]),
+            _none_if_blank(row["error_details"]),
+            _none_if_blank(row["step_details"]),
+        )
+        for row in rows
+    ]
+    target.executemany(
+        """
+        INSERT INTO update_runs (
+            source, started_at, finished_at, duration_seconds, status,
+            snapshot_id, success_rate, error_details, step_details
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (source, started_at) DO UPDATE SET
+            finished_at = excluded.finished_at,
+            duration_seconds = excluded.duration_seconds,
+            status = excluded.status,
+            snapshot_id = excluded.snapshot_id,
+            success_rate = excluded.success_rate,
+            error_details = excluded.error_details,
+            step_details = excluded.step_details
+        """,
+        batch,
+    )
+    counts["update_runs"] += len(batch)
+    return str(rows[-1]["started_at"])
 
 
 def _sync_missing_postgres_update_runs_to_sqlite(
     target: sqlite3.Connection,
     source: DbConnection,
     counts: dict[str, int],
-) -> None:
-    for row in source.execute("SELECT * FROM update_runs ORDER BY started_at, update_run_id").fetchall():
-        existing = target.execute(
-            """
-            SELECT update_run_id
-            FROM update_runs
-            WHERE source = ? AND started_at = ? AND finished_at = ?
-            LIMIT 1
-            """,
-            (row["source"], row["started_at"], row["finished_at"]),
-        ).fetchone()
-        if existing:
-            continue
-        target.execute(
-            """
-            INSERT INTO update_runs (
-                source, started_at, finished_at, duration_seconds, status,
-                snapshot_id, success_rate, error_details, step_details
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                row["source"],
-                row["started_at"],
-                row["finished_at"],
-                _float_or_none(row["duration_seconds"]) or 0.0,
-                row["status"],
-                _int_or_none(row["snapshot_id"]),
-                _float_or_none(row["success_rate"]),
-                _none_if_blank(row["error_details"]),
-                _none_if_blank(row["step_details"]),
-            ),
+    *,
+    since: str | None,
+) -> str | None:
+    query = "SELECT * FROM update_runs"
+    params: tuple = ()
+    if since is not None:
+        query += " WHERE started_at > ?"
+        params = (since,)
+    query += " ORDER BY started_at, update_run_id"
+    rows = source.execute(query, params).fetchall()
+    if not rows:
+        return since
+
+    batch = [
+        (
+            row["source"],
+            row["started_at"],
+            row["finished_at"],
+            _float_or_none(row["duration_seconds"]) or 0.0,
+            row["status"],
+            _int_or_none(row["snapshot_id"]),
+            _float_or_none(row["success_rate"]),
+            _none_if_blank(row["error_details"]),
+            _none_if_blank(row["step_details"]),
         )
-        counts["pulled_update_runs"] += 1
+        for row in rows
+    ]
+    target.executemany(
+        """
+        INSERT OR IGNORE INTO update_runs (
+            source, started_at, finished_at, duration_seconds, status,
+            snapshot_id, success_rate, error_details, step_details
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        batch,
+    )
+    counts["pulled_update_runs"] += len(batch)
+    return str(rows[-1]["started_at"])
 
 
 def _sync_basket_items_to_postgres(source: sqlite3.Connection, target: DbConnection, counts: dict[str, int]) -> None:
-    for row in source.execute("SELECT * FROM basket_items ORDER BY item_id"):
-        target.execute(
-            """
-            INSERT INTO basket_items (
-                market_hash_name, active, multiplier, notes, source_rank,
-                source_amount, price_compare_url, priceempire_url, steamanalyst_url,
-                marketplace_links_json, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(market_hash_name) DO UPDATE SET
-                active = excluded.active,
-                multiplier = excluded.multiplier,
-                notes = excluded.notes,
-                source_rank = excluded.source_rank,
-                source_amount = excluded.source_amount,
-                price_compare_url = excluded.price_compare_url,
-                priceempire_url = excluded.priceempire_url,
-                steamanalyst_url = excluded.steamanalyst_url,
-                marketplace_links_json = excluded.marketplace_links_json
-            """,
-            (
-                row["market_hash_name"],
-                _int_or_default(row["active"], 1),
-                _int_or_default(row["multiplier"], 1),
-                row["notes"] or "",
-                _int_or_none(row["source_rank"]),
-                _float_or_none(row["source_amount"]),
-                _none_if_blank(row["price_compare_url"]),
-                _none_if_blank(row["priceempire_url"]),
-                _none_if_blank(row["steamanalyst_url"]),
-                _none_if_blank(row["marketplace_links_json"]),
-                row["created_at"] or utc_now_iso(),
-            ),
+    rows = source.execute("SELECT * FROM basket_items ORDER BY item_id").fetchall()
+    if not rows:
+        return
+    batch = [
+        (
+            row["market_hash_name"],
+            _int_or_default(row["active"], 1),
+            _int_or_default(row["multiplier"], 1),
+            row["notes"] or "",
+            _int_or_none(row["source_rank"]),
+            _float_or_none(row["source_amount"]),
+            _none_if_blank(row["price_compare_url"]),
+            _none_if_blank(row["priceempire_url"]),
+            _none_if_blank(row["steamanalyst_url"]),
+            _none_if_blank(row["marketplace_links_json"]),
+            row["created_at"] or utc_now_iso(),
         )
-        counts["basket_items"] += 1
+        for row in rows
+    ]
+    target.executemany(
+        """
+        INSERT INTO basket_items (
+            market_hash_name, active, multiplier, notes, source_rank,
+            source_amount, price_compare_url, priceempire_url, steamanalyst_url,
+            marketplace_links_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(market_hash_name) DO UPDATE SET
+            active = excluded.active,
+            multiplier = excluded.multiplier,
+            notes = excluded.notes,
+            source_rank = excluded.source_rank,
+            source_amount = excluded.source_amount,
+            price_compare_url = excluded.price_compare_url,
+            priceempire_url = excluded.priceempire_url,
+            steamanalyst_url = excluded.steamanalyst_url,
+            marketplace_links_json = excluded.marketplace_links_json
+        """,
+        batch,
+    )
+    counts["basket_items"] += len(batch)
 
 
 def _sync_marketplaces_to_postgres(source: sqlite3.Connection, target: DbConnection, counts: dict[str, int]) -> None:
-    for row in source.execute("SELECT * FROM marketplaces ORDER BY adapter_key"):
-        target.execute(
-            """
-            INSERT INTO marketplaces (
-                adapter_key, name, enabled, is_baseline, requires_credentials,
-                last_status, last_error, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(adapter_key) DO UPDATE SET
-                name = excluded.name,
-                enabled = excluded.enabled,
-                is_baseline = excluded.is_baseline,
-                requires_credentials = excluded.requires_credentials,
-                last_status = excluded.last_status,
-                last_error = excluded.last_error,
-                updated_at = excluded.updated_at
-            """,
-            (
-                row["adapter_key"],
-                row["name"],
-                _int_or_default(row["enabled"], 1),
-                _int_or_default(row["is_baseline"], 0),
-                _int_or_default(row["requires_credentials"], 0),
-                _none_if_blank(row["last_status"]),
-                _none_if_blank(row["last_error"]),
-                _none_if_blank(row["updated_at"]),
-            ),
+    rows = source.execute("SELECT * FROM marketplaces ORDER BY adapter_key").fetchall()
+    if not rows:
+        return
+    batch = [
+        (
+            row["adapter_key"],
+            row["name"],
+            _int_or_default(row["enabled"], 1),
+            _int_or_default(row["is_baseline"], 0),
+            _int_or_default(row["requires_credentials"], 0),
+            _none_if_blank(row["last_status"]),
+            _none_if_blank(row["last_error"]),
+            _none_if_blank(row["updated_at"]),
         )
-        counts["marketplaces"] += 1
+        for row in rows
+    ]
+    target.executemany(
+        """
+        INSERT INTO marketplaces (
+            adapter_key, name, enabled, is_baseline, requires_credentials,
+            last_status, last_error, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(adapter_key) DO UPDATE SET
+            name = excluded.name,
+            enabled = excluded.enabled,
+            is_baseline = excluded.is_baseline,
+            requires_credentials = excluded.requires_credentials,
+            last_status = excluded.last_status,
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at
+        """,
+        batch,
+    )
+    counts["marketplaces"] += len(batch)
 
 
 def _none_if_blank(value):

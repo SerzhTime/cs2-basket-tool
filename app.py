@@ -7,7 +7,6 @@ import importlib
 import json
 import os
 import re
-from threading import Lock
 import time
 
 import pandas as pd
@@ -36,6 +35,7 @@ from calculations import (
     split_comparison_fixed_rows,
 )
 from services.basket_service import should_sync_basket_file_on_startup, sync_basket_file
+from services.background_neon_sync import BackgroundNeonSync
 from services.background_price_update import BackgroundPriceUpdate
 from services.update_service import SnapshotQualityError, collect_snapshot, latest_update_step_details
 
@@ -343,7 +343,7 @@ def main() -> None:
 
     if sync_clicked:
         suppress_pending_automatic_neon_sync()
-        perform_neon_sync("manual")
+        start_background_neon_sync("manual")
         st.rerun()
     if update_clicked:
         if not background_price_update().start():
@@ -449,14 +449,14 @@ def run_due_neon_sync() -> None:
         st.session_state.pop("pending_neon_sync_trigger", None)
         return
     if st.session_state.pop("pending_startup_neon_sync", False):
-        perform_neon_sync("startup")
+        start_background_neon_sync("startup")
         st.rerun()
 
     due_at = st.session_state.get("pending_neon_sync_at")
     if due_at and time.time() >= float(due_at):
         st.session_state.pop("pending_neon_sync_at", None)
         trigger = st.session_state.pop("pending_neon_sync_trigger", "startup")
-        perform_neon_sync(trigger)
+        start_background_neon_sync(trigger)
         st.rerun()
 
 
@@ -466,7 +466,7 @@ def neon_sync_due() -> bool:
 
 
 def automatic_neon_sync_busy() -> bool:
-    if st.session_state.get("neon_sync_running"):
+    if neon_sync_state().get("status") == "running":
         return True
     if not local_neon_sync_available():
         return False
@@ -486,80 +486,15 @@ def recent_manual_neon_sync() -> bool:
     return bool(started_at and time.time() - float(started_at) < 60)
 
 
-def perform_neon_sync(trigger: str) -> None:
+def start_background_neon_sync(trigger: str) -> None:
     if db.using_postgres():
         st.session_state.sync_notice = "Online app already uses Neon directly. No local SQLite sync is needed."
         return
     if not db.postgres_database_url():
         st.session_state.sync_error = "DATABASE_URL is not configured, so Neon sync cannot run."
         return
-    if not _NEON_SYNC_LOCK.acquire(blocking=False):
+    if not background_neon_sync().start(trigger):
         st.session_state.sync_notice = "Another Neon synchronization is already running."
-        return
-
-    started_at = db.utc_now_iso()
-    started_timer = time.perf_counter()
-    st.session_state.neon_sync_running = True
-    try:
-        try:
-            counts = db.sync_sqlite_to_postgres()
-        except Exception as exc:
-            error_details = safe_error_details(exc)
-            record_update_run_compat(
-                source="sync",
-                started_at=started_at,
-                finished_at=db.utc_now_iso(),
-                duration_seconds=time.perf_counter() - started_timer,
-                status="error",
-                error_details=error_details,
-                step_details=json.dumps([{"provider_group": "Neon", "step": "Synchronization", "errors": error_details}]),
-            )
-            st.session_state.sync_error = error_details
-            return
-    finally:
-        st.session_state.neon_sync_running = False
-        _NEON_SYNC_LOCK.release()
-
-    record_successful_neon_sync()
-    elapsed_seconds = float(counts.get("elapsed_seconds", time.perf_counter() - started_timer))
-    sync_step = "Full reconciliation" if counts.get("full_reconcile") else "Incremental synchronization"
-    record_update_run_compat(
-        source="sync",
-        started_at=started_at,
-        finished_at=db.utc_now_iso(),
-        duration_seconds=elapsed_seconds,
-        status="ok",
-        error_details=(
-            f"checked {counts.get('checked_snapshots', 0)} snapshots, "
-            f"unchanged {counts.get('unchanged_snapshots', 0)}"
-        ),
-        step_details=json.dumps(
-            [
-                {
-                    "provider_group": "Neon",
-                    "step": sync_step,
-                    "duration_seconds": elapsed_seconds,
-                    "elapsed_seconds": elapsed_seconds,
-                    "received": (
-                        f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points; "
-                        f"pulled {counts['pulled_snapshots']} snapshots / {counts['pulled_price_points']} price points"
-                    ),
-                    "missing": counts.get("unchanged_snapshots", 0),
-                    "errors": "",
-                }
-            ]
-        ),
-    )
-    repaired = counts.get("replaced_snapshots", 0)
-    repair_text = f", repaired {repaired} partial snapshots" if repaired else ""
-    st.session_state.sync_notice = (
-        f"{sync_trigger_label(trigger)} sync completed in {elapsed_seconds:.1f}s: "
-        f"pushed {counts['snapshots']} snapshots / {counts['price_points']} price points, "
-        f"pulled {counts['pulled_snapshots']} snapshots / {counts['pulled_price_points']} price points"
-        f", checked {counts.get('checked_snapshots', 0)} snapshots"
-        f"{repair_text}."
-    )
-    clear_data_cache()
 
 
 def sync_trigger_label(trigger: str) -> str:
@@ -1640,9 +1575,6 @@ def format_percent_value(value) -> str:
     return f"{float(value):,.2f}%"
 
 
-_NEON_SYNC_LOCK = Lock()
-
-
 def record_update_run_compat(**kwargs) -> None:
     try:
         db.record_update_run(**kwargs)
@@ -1702,16 +1634,59 @@ def complete_background_price_update_if_needed() -> bool:
     return True
 
 
+@st.cache_resource
+def background_neon_sync() -> BackgroundNeonSync:
+    return BackgroundNeonSync(
+        sync=db.sync_sqlite_to_postgres,
+        record_run=record_update_run_compat,
+        now=db.utc_now_iso,
+    )
+
+
+def neon_sync_state() -> dict:
+    return background_neon_sync().snapshot()
+
+
+def complete_background_neon_sync_if_needed() -> bool:
+    state = neon_sync_state()
+    if state.get("status") not in {"completed", "error"}:
+        return False
+    job_id = state.get("job_id")
+    if st.session_state.get("handled_neon_sync_job_id") == job_id:
+        return False
+
+    st.session_state.handled_neon_sync_job_id = job_id
+    if state["status"] == "completed":
+        counts = state.get("counts") or {}
+        elapsed_seconds = float(state.get("elapsed_seconds") or 0)
+        repaired = counts.get("replaced_snapshots", 0)
+        repair_text = f", repaired {repaired} partial snapshots" if repaired else ""
+        st.session_state.sync_notice = (
+            f"{sync_trigger_label(state.get('trigger', ''))} sync completed in {elapsed_seconds:.1f}s: "
+            f"pushed {counts.get('snapshots', 0)} snapshots / {counts.get('price_points', 0)} price points, "
+            f"pulled {counts.get('pulled_snapshots', 0)} snapshots / {counts.get('pulled_price_points', 0)} price points"
+            f", checked {counts.get('checked_snapshots', 0)} snapshots"
+            f"{repair_text}."
+        )
+        record_successful_neon_sync()
+        clear_data_cache()
+    else:
+        st.session_state.sync_error = state.get("error_details") or "Neon synchronization failed."
+    return True
+
+
 @st.fragment(run_every=1.0)
 def render_live_update_status() -> None:
     if complete_background_price_update_if_needed():
+        st.rerun()
+    if complete_background_neon_sync_if_needed():
         st.rerun()
     state = price_update_state()
     if state.get("status") == "running":
         render_update_status(
             f"Skin prices received: {int(state.get('received', 0)):,} of {int(state.get('total', 0)):,}.",
         )
-    elif st.session_state.get("neon_sync_running") or automatic_neon_sync_busy():
+    elif neon_sync_state().get("status") == "running" or automatic_neon_sync_busy():
         render_update_status("Synchronizing local SQLite and Neon...")
     else:
         render_update_status()
