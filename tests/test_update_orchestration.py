@@ -18,11 +18,17 @@ from services import update_service
 
 
 class _Adapter:
-    def __init__(self, name: str, *, error: Exception | None = None):
+    def __init__(self, name: str, *, error: Exception | None = None, started: threading.Event | None = None, release: threading.Event | None = None):
         self.name = name
         self.error = error
+        self.started = started
+        self.release = release
 
     def fetch_prices(self, items):
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None:
+            self.release.wait(timeout=2)
         if self.error:
             raise self.error
         return []
@@ -49,6 +55,22 @@ class UpdateOrchestrationTests(unittest.TestCase):
         self.assertEqual([result.fetch_status for result in results], ["error", "error"])
         self.assertEqual([result.market_hash_name for result in results], ["A", "B"])
         self.assertTrue(all(result.error_details == "offline" for result in results))
+
+    def test_csgoskins_group_starts_before_the_baseline_completes(self):
+        baseline_started = threading.Event()
+        baseline_release = threading.Event()
+        csgoskins_started = threading.Event()
+        baseline = _Adapter("HaloSkins", started=baseline_started, release=baseline_release)
+        csgoskins = _Adapter("Aim.market", started=csgoskins_started)
+
+        with update_service.ThreadPoolExecutor(max_workers=2) as executor:
+            baseline_future = executor.submit(update_service.fetch_adapter_group, [baseline], [])
+            csgoskins_future = executor.submit(update_service.fetch_adapter_group, [csgoskins], [])
+            self.assertTrue(baseline_started.wait(timeout=1))
+            self.assertTrue(csgoskins_started.wait(timeout=1))
+            baseline_release.set()
+            baseline_future.result()
+            csgoskins_future.result()
 
     def test_update_steps_are_isolated_between_threads(self):
         barrier = threading.Barrier(2)

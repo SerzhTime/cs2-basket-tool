@@ -142,21 +142,31 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
     report_progress("Updating HaloSkins baseline")
     baseline_entries = [entry for entry in enabled_adapters if entry[1].name == BASELINE_MARKETPLACE]
     remaining_entries = [entry for entry in enabled_adapters if entry[1].name != BASELINE_MARKETPLACE]
-    for completed in fetch_adapter_group([adapter for _, adapter in baseline_entries], items):
-        accept_completed_adapter(completed, "Baseline")
+    csgoskins_entries = [entry for entry in remaining_entries if adapter_provider_group(entry[0]) == "CSGOSKINS"]
+    api_entries = [entry for entry in remaining_entries if adapter_provider_group(entry[0]) != "CSGOSKINS"]
 
-    grouped_adapters: dict[str, list] = {}
-    for key, adapter in remaining_entries:
-        grouped_adapters.setdefault(adapter_provider_group(key), []).append(adapter)
-
-    report_progress(f"Updating {len(grouped_adapters)} provider groups in parallel")
-    worker_limit = max(1, int(os.getenv("PRICE_UPDATE_MAX_WORKERS", "12")))
-    worker_count = min(worker_limit, max(1, len(grouped_adapters)))
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="price-provider") as executor:
-        futures = {
+    def submit_provider_groups(executor, entries):
+        grouped: dict[str, list] = {}
+        for key, adapter in entries:
+            grouped.setdefault(adapter_provider_group(key), []).append(adapter)
+        return {
             executor.submit(fetch_adapter_group, group_adapters, items): group_name
-            for group_name, group_adapters in grouped_adapters.items()
+            for group_name, group_adapters in grouped.items()
         }
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(int(os.getenv("PRICE_UPDATE_MAX_WORKERS", "12")), len(enabled_adapters) or 1)),
+        thread_name_prefix="price-provider",
+    ) as executor:
+        baseline_futures = submit_provider_groups(executor, baseline_entries)
+        csgoskins_futures = submit_provider_groups(executor, csgoskins_entries)
+        for future in baseline_futures:
+            for completed in future.result():
+                accept_completed_adapter(completed, "Baseline")
+
+        api_futures = submit_provider_groups(executor, api_entries)
+        futures = {**api_futures, **csgoskins_futures}
+        report_progress(f"Updating {len(futures)} provider groups in parallel")
         for future in as_completed(futures):
             group_name = futures[future]
             for completed in future.result():
