@@ -20,6 +20,39 @@ class NeonSyncManifestTests(unittest.TestCase):
         changed[1] = (*changed[1][:2], 3.15, *changed[1][3:])
         self.assertNotEqual(db._snapshot_signature(original), db._snapshot_signature(changed))
 
+    def test_signature_line_uses_exact_micro_integer_encoding(self) -> None:
+        # Locks the canonical per-point encoding that _postgres_snapshot_signatures
+        # must reproduce byte-for-byte in SQL: NULLs become empty fields and floats
+        # are truncated to integer micros (no engine-specific float formatting).
+        line = db._signature_line(("CSFloat", "Item", 3.2, "USD", None, "USD", 5, "ok", None, "t"))
+        self.assertEqual(
+            line,
+            "CSFloat\x1fItem\x1f3200000\x1fUSD\x1f\x1fUSD\x1f5\x1fok\x1f\x1ft",
+        )
+
+    def test_signature_normalizes_blank_error_details(self) -> None:
+        base = ("CSFloat", "AK-47 | Slate", 3.2, "USD", 3.2, "USD", 1, "ok", None, "t")
+        self.assertEqual(
+            db._snapshot_signature([base]),
+            db._snapshot_signature([(*base[:8], "   ", base[9])]),
+        )
+
+    def test_reconcile_forced_when_signature_version_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest_path = Path(temporary_directory) / "manifest.json"
+            with patch.object(db, "NEON_SYNC_MANIFEST_PATH", manifest_path):
+                db._save_neon_sync_manifest(
+                    {"s": "sig"},
+                    full_reconciled_at=time.time(),
+                    local_revision={},
+                )
+                manifest = db._load_neon_sync_manifest()
+
+        self.assertEqual(manifest["signature_version"], db._SNAPSHOT_SIGNATURE_VERSION)
+        self.assertFalse(db._neon_full_reconcile_due(manifest))
+        # A manifest without a signature_version (pre-upgrade) forces a reconcile.
+        self.assertTrue(db._neon_full_reconcile_due({"last_full_reconciled_at": time.time()}))
+
     def test_manifest_round_trip_and_reconcile_interval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             manifest_path = Path(temporary_directory) / "manifest.json"

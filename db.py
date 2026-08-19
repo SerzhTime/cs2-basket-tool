@@ -1440,7 +1440,12 @@ def _is_deadlock_error(exc: Exception) -> bool:
     return "deadlock detected" in str(exc).lower()
 
 
+_SNAPSHOT_SIGNATURE_VERSION = 2
+
+
 def _neon_full_reconcile_due(manifest: dict) -> bool:
+    if manifest.get("signature_version") != _SNAPSHOT_SIGNATURE_VERSION:
+        return True
     try:
         last_full = float(manifest.get("last_full_reconciled_at") or 0)
         hours = max(1.0, float(os.getenv("NEON_FULL_RECONCILE_HOURS", "24")))
@@ -1464,6 +1469,7 @@ def _load_neon_sync_manifest() -> dict:
         "local_revision": payload.get("local_revision"),
         "update_runs_push_cursor": payload.get("update_runs_push_cursor"),
         "update_runs_pull_cursor": payload.get("update_runs_pull_cursor"),
+        "signature_version": payload.get("signature_version"),
     }
 
 
@@ -1481,6 +1487,7 @@ def _save_neon_sync_manifest(
         "local_revision": local_revision,
         "update_runs_push_cursor": update_runs_push_cursor,
         "update_runs_pull_cursor": update_runs_pull_cursor,
+        "signature_version": _SNAPSHOT_SIGNATURE_VERSION,
     }
     try:
         NEON_SYNC_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1596,33 +1603,52 @@ def _postgres_snapshot_metadata(
     }
 
 
+_POSTGRES_SNAPSHOT_SIGNATURES_SQL = """
+    SELECT s.timestamp,
+           encode(
+               sha256(
+                   convert_to(
+                       COALESCE(
+                           string_agg(
+                               pp.marketplace
+                                   || chr(31) || pp.market_hash_name
+                                   || chr(31) || CASE WHEN pp.price IS NULL THEN '' ELSE (trunc(pp.price * 1000000.0::float8)::bigint)::text END
+                                   || chr(31) || COALESCE(NULLIF(pp.currency, ''), 'USD')
+                                   || chr(31) || CASE WHEN pp.normalized_price IS NULL THEN '' ELSE (trunc(pp.normalized_price * 1000000.0::float8)::bigint)::text END
+                                   || chr(31) || COALESCE(NULLIF(pp.normalized_currency, ''), 'USD')
+                                   || chr(31) || CASE WHEN pp.stock_count IS NULL THEN '' ELSE pp.stock_count::text END
+                                   || chr(31) || COALESCE(pp.fetch_status, '')
+                                   || chr(31) || COALESCE(NULLIF(btrim(pp.error_details), ''), '')
+                                   || chr(31) || pp.timestamp,
+                               E'\n' ORDER BY pp.marketplace, pp.market_hash_name
+                           ),
+                           ''
+                       ),
+                       'UTF8'
+                   )
+               ),
+               'hex'
+           ) AS signature
+    FROM snapshots s
+    LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
+    GROUP BY s.snapshot_id, s.timestamp
+    ORDER BY s.snapshot_id
+"""
+
+
 def _postgres_snapshot_signatures(target: DbConnection) -> dict[str, str]:
-    rows = target.execute(
-        """
-        SELECT s.snapshot_id, s.timestamp, pp.marketplace, pp.market_hash_name,
-            pp.price, pp.currency, pp.normalized_price, pp.normalized_currency,
-            pp.stock_count, pp.fetch_status, pp.error_details, pp.timestamp AS point_timestamp
-        FROM snapshots s
-        LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
-        ORDER BY s.snapshot_id, pp.marketplace, pp.market_hash_name, pp.price_point_id
-        """
-    ).fetchall()
-    signatures: dict[str, str] = {}
-    current_id: int | None = None
-    current_timestamp = ""
-    current_values: list[tuple] = []
-    for row in rows:
-        snapshot_id = int(row["snapshot_id"])
-        if current_id is not None and snapshot_id != current_id:
-            signatures[current_timestamp] = _snapshot_signature(current_values)
-            current_values = []
-        current_id = snapshot_id
-        current_timestamp = str(row["timestamp"])
-        if row["marketplace"] is not None:
-            current_values.append(_price_point_signature_values(row, timestamp_key="point_timestamp"))
-    if current_id is not None:
-        signatures[current_timestamp] = _snapshot_signature(current_values)
-    return signatures
+    """Per-snapshot signatures computed entirely on the Postgres side.
+
+    Replaces the previous approach of SELECTing every ``price_points`` row back
+    over the wire (350k+ rows on a ~500ms round-trip connection) and hashing in
+    Python; that took minutes. This only returns one row per snapshot.
+    """
+    rows = target.execute(_POSTGRES_SNAPSHOT_SIGNATURES_SQL).fetchall()
+    return {
+        str(row["timestamp"]): row["signature"]
+        for row in rows
+        if row["signature"] is not None
+    }
 
 
 def _price_point_signature_values(row, *, timestamp_key: str = "timestamp") -> tuple:
@@ -1640,16 +1666,46 @@ def _price_point_signature_values(row, *, timestamp_key: str = "timestamp") -> t
     )
 
 
+def _signature_line(values: tuple) -> str:
+    """Canonical one-line encoding of a single price point.
+
+    Must match the SQL used by ``_postgres_snapshot_signatures`` byte-for-byte:
+    floats are encoded as integer micros (``trunc(value * 1e6)``) so the value
+    is exact and identical on both SQLite (via Python) and Postgres (via SQL),
+    rather than depending on either engine's float-to-text formatting.
+    """
+    (
+        marketplace,
+        market_hash_name,
+        price,
+        currency,
+        normalized_price,
+        normalized_currency,
+        stock_count,
+        fetch_status,
+        error_details,
+        point_timestamp,
+    ) = values
+    return "\x1f".join(
+        (
+            marketplace,
+            market_hash_name,
+            "" if price is None else str(int(price * 1_000_000.0)),
+            currency,
+            "" if normalized_price is None else str(int(normalized_price * 1_000_000.0)),
+            normalized_currency,
+            "" if stock_count is None else str(stock_count),
+            fetch_status or "",
+            (error_details or "").strip(),
+            point_timestamp,
+        )
+    )
+
+
 def _snapshot_signature(values: list[tuple]) -> str:
-    digest = hashlib.sha256()
-    for row in values:
-        normalized = [
-            "" if value is None else format(value, ".12g") if isinstance(value, float) else str(value)
-            for value in row
-        ]
-        digest.update(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
+    return hashlib.sha256(
+        "\n".join(_signature_line(row) for row in values).encode("utf-8")
+    ).hexdigest()
 
 
 def _sync_missing_postgres_snapshots_to_sqlite(
