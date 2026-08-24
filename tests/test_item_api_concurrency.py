@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from adapters.base import BasketItem, PriceResult
-from adapters.backup_sources import BackupOffer, apply_backup_prices, clear_backup_cache
+from adapters.backup_sources import BackupOffer, _parse_priceempire_offers, apply_backup_prices, clear_backup_cache
 from adapters.concurrency import map_concurrently
 from adapters.csfloat import CSFloatAdapter
 from adapters.csgoskins import CSGOSKINSMarketplaceAdapter, clear_csgoskins_cache
@@ -106,6 +106,23 @@ class ItemApiConcurrencyTests(unittest.TestCase):
 
         self.assertEqual([result.market_hash_name for result in results], [item.market_hash_name for item in items])
         self.assertTrue(all(result.fetch_status == "ok" for result in results))
+
+    def test_priceempire_listing_rows_are_parsed(self) -> None:
+        html = """
+            <div class="listing-row">
+                <span class="listing-row__provider-name">CS.MONEY</span>
+                <span class="listing-row__price">$1,851.02</span>
+            </div>
+            <div class="listing-row">
+                <span class="listing-row__provider-name">Skinport</span>
+                <span class="listing-row__price">$1,703.69</span>
+            </div>
+        """
+
+        offers = _parse_priceempire_offers(html)
+
+        self.assertEqual(offers["csmoney"], BackupOffer("CS.MONEY", 1851.02, "PriceEmpire CS.MONEY"))
+        self.assertEqual(offers["skinport"], BackupOffer("Skinport", 1703.69, "PriceEmpire Skinport"))
 
     def test_backup_prices_resolve_concurrently_and_preserve_order(self) -> None:
         items = [

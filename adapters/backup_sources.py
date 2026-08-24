@@ -207,14 +207,14 @@ def _load_priceempire_offers(url: str, rate_limiter: RequestRateLimiter | None) 
 def _parse_priceempire_offers(html: str) -> dict[str, BackupOffer]:
     soup = BeautifulSoup(html, "html.parser")
     offers: dict[str, BackupOffer] = {}
-    for article in soup.select('article[aria-label^="Offer from "]'):
-        label = article.get("aria-label") or ""
-        marketplace = label.removeprefix("Offer from ").strip()
-        if not marketplace:
+    for row in soup.select(".listing-row"):
+        marketplace_node = row.select_one(".listing-row__provider-name")
+        price_node = row.select_one(".listing-row__price")
+        if marketplace_node is None or price_node is None:
             continue
-        text = article.get_text(" ", strip=True)
-        price = _parse_price(text)
-        if price is None or price <= 0:
+        marketplace = marketplace_node.get_text(" ", strip=True)
+        price = _parse_price(price_node.get_text(" ", strip=True))
+        if not marketplace or price is None or price <= 0:
             continue
         offers[_normalize_marketplace(marketplace)] = BackupOffer(
             marketplace=marketplace,
