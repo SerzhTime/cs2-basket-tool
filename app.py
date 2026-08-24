@@ -1648,14 +1648,10 @@ def neon_sync_state() -> dict:
 
 
 def complete_background_neon_sync_if_needed() -> bool:
-    state = neon_sync_state()
-    if state.get("status") not in {"completed", "error"}:
-        return False
-    job_id = state.get("job_id")
-    if st.session_state.get("handled_neon_sync_job_id") == job_id:
+    state = background_neon_sync().consume_completion()
+    if state is None:
         return False
 
-    st.session_state.handled_neon_sync_job_id = job_id
     if state["status"] == "completed":
         counts = state.get("counts") or {}
         elapsed_seconds = float(state.get("elapsed_seconds") or 0)

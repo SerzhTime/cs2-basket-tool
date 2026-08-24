@@ -47,6 +47,15 @@ class BackgroundNeonSync:
         with self._lock:
             return asdict(self._state)
 
+    def consume_completion(self) -> dict | None:
+        """Return a completed job once, then reset it to idle."""
+        with self._lock:
+            if self._state.status not in {"completed", "error"}:
+                return None
+            completed = asdict(self._state)
+            self._state = NeonSyncState(job_id=self._state.job_id)
+            return completed
+
     def _finish(self, job_id: int, **values) -> None:
         with self._lock:
             if self._state.job_id != job_id:

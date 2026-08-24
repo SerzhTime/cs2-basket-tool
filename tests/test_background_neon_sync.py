@@ -73,6 +73,22 @@ class BackgroundNeonSyncTests(unittest.TestCase):
         self.assertIn("connection failed", state["error_details"])
         self.assertEqual(recorded[0]["status"], "error")
 
+    def test_completion_can_be_consumed_only_once(self) -> None:
+        job = BackgroundNeonSync(
+            sync=lambda: dict(BASE_COUNTS),
+            record_run=lambda **_kwargs: None,
+            now=lambda: "2026-07-30T00:00:00+00:00",
+        )
+
+        self.assertTrue(job.start("manual"))
+        self.wait_for_completion(job)
+
+        completed = job.consume_completion()
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["trigger"], "manual")
+        self.assertIsNone(job.consume_completion())
+        self.assertEqual(job.snapshot()["status"], "idle")
+
     def test_second_start_is_rejected_while_running(self) -> None:
         def sync():
             time.sleep(0.05)
