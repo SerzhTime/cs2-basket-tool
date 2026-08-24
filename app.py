@@ -1648,9 +1648,22 @@ def neon_sync_state() -> dict:
 
 
 def complete_background_neon_sync_if_needed() -> bool:
-    state = background_neon_sync().consume_completion()
-    if state is None:
-        return False
+    worker = background_neon_sync()
+    consume_completion = getattr(worker, "consume_completion", None)
+    if consume_completion is None:
+        # Streamlit can retain the cached pre-deployment worker during a hot
+        # reload. Preserve the old one-time handling path until a restart.
+        state = worker.snapshot()
+        if state.get("status") not in {"completed", "error"}:
+            return False
+        job_id = state.get("job_id")
+        if st.session_state.get("handled_neon_sync_job_id") == job_id:
+            return False
+        st.session_state.handled_neon_sync_job_id = job_id
+    else:
+        state = consume_completion()
+        if state is None:
+            return False
 
     if state["status"] == "completed":
         counts = state.get("counts") or {}
