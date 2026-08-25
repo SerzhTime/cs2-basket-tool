@@ -4,6 +4,8 @@ from pathlib import Path
 import sqlite3
 import sys
 import unittest
+from contextlib import contextmanager
+from datetime import datetime
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -13,6 +15,64 @@ if str(APP_DIR) not in sys.path:
 import db
 
 
+class HistoryRetentionTests(unittest.TestCase):
+    def setUp(self):
+        raw = sqlite3.connect(":memory:")
+        raw.row_factory = sqlite3.Row
+        self.raw = raw
+        self.con = db.DbConnection(raw, "sqlite")
+        self.con.executescript(db._schema_sql("sqlite"))
+        item = self.con.execute(
+            "INSERT INTO basket_items (market_hash_name, active, multiplier, created_at) VALUES (?, 1, 1, ?) RETURNING item_id",
+            ("Item", "2026-01-01T00:00:00+00:00"),
+        ).fetchone()
+        self.item_id = int(item["item_id"])
+        self.con.execute(
+            "INSERT INTO marketplaces (adapter_key, name, enabled, is_baseline, updated_at) VALUES (?, ?, 1, ?, ?)",
+            ("haloskins", "HaloSkins", 1, "2026-01-01T00:00:00+00:00"),
+        )
+
+    def tearDown(self):
+        self.raw.close()
+
+    def _snapshot(self, timestamp: str, price: float) -> None:
+        snapshot = self.con.execute("INSERT INTO snapshots(timestamp) VALUES (?) RETURNING snapshot_id", (timestamp,)).fetchone()
+        self.con.execute(
+            """
+            INSERT INTO price_points (
+                snapshot_id, marketplace, item_id, market_hash_name, price, currency,
+                normalized_price, normalized_currency, fetch_status, timestamp
+            ) VALUES (?, 'HaloSkins', ?, 'Item', ?, 'USD', ?, 'USD', 'ok', ?)
+            """,
+            (snapshot["snapshot_id"], self.item_id, price, price, timestamp),
+        )
+
+    def test_daily_calendar_day_and_min_average_max(self):
+        self._snapshot("2026-08-20T16:00:00+00:00", 10.0)
+        self._snapshot("2026-08-20T18:00:00+00:00", 14.0)
+        old_connect = db.connect
+        db.connect = lambda: self._connection_context()
+        try:
+            result = db.compact_history(now=__import__("datetime").datetime.fromisoformat("2026-08-22T00:00:00+00:00"))
+        finally:
+            db.connect = old_connect
+        self.assertEqual(result["daily_totals"], 1)
+        row = self.raw.execute("SELECT * FROM history_daily_totals").fetchone()
+        self.assertEqual(row["period_start"], "2026-08-21T00:00:00+08:00")
+        self.assertEqual(row["average_total_cost"], 12.0)
+        self.assertEqual(row["min_total_cost"], 10.0)
+        self.assertEqual(row["max_total_cost"], 14.0)
+        self.assertEqual(row["sample_count"], 2)
+
+    @contextmanager
+    def _connection_context(self):
+        yield self.con
+
+    def test_dry_run_does_not_delete_raw_rows(self):
+        self._snapshot("2026-08-20T16:00:00+00:00", 10.0)
+        result = db.compact_history(now=__import__("datetime").datetime.fromisoformat("2026-08-22T00:00:00+00:00"), dry_run=True)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(self.raw.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0], 1)
 class PricePointIntegrityTests(unittest.TestCase):
     def setUp(self):
         raw = sqlite3.connect(":memory:")

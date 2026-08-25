@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Thread
 from typing import Iterable, Any
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from adapters import BasketItem, PriceResult, build_adapter_registry
 
@@ -38,6 +40,7 @@ REMOVED_MOCK_MARKETPLACES = {
 }
 REMOTE_LOCK_HEARTBEAT_SECONDS = 30.0
 NEON_SYNC_MANIFEST_PATH = APP_DIR / ".runtime" / "neon_snapshot_sync_manifest.json"
+HISTORY_TIMEZONE = ZoneInfo("Asia/Singapore")
 
 
 def postgres_database_url() -> str | None:
@@ -218,7 +221,7 @@ def init_db(*, migrate: bool = True, maintenance: bool = True) -> None:
             ensure_column(con, "basket_items", "priceempire_url", "TEXT")
             ensure_column(con, "basket_items", "steamanalyst_url", "TEXT")
             ensure_column(con, "basket_items", "marketplace_links_json", "TEXT")
-            ensure_column(con, "update_runs", "step_details", "TEXT")
+            ensure_history_rollup_schema(con)
             ensure_update_run_uniqueness(con)
         else:
             # Fail quickly and clearly if the database was never initialized.
@@ -313,6 +316,25 @@ def _schema_sql(backend: str | None = None) -> str:
                 payload TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS history_daily_totals (
+                period_start TEXT NOT NULL,
+                marketplace TEXT NOT NULL,
+                average_total_cost DOUBLE PRECISION NOT NULL,
+                min_total_cost DOUBLE PRECISION NOT NULL,
+                max_total_cost DOUBLE PRECISION NOT NULL,
+                sample_count INTEGER NOT NULL,
+                first_sample_at TEXT NOT NULL,
+                last_sample_at TEXT NOT NULL,
+                aggregated_at TEXT NOT NULL,
+                PRIMARY KEY (period_start, marketplace)
+            );
+            CREATE TABLE IF NOT EXISTS history_retention_state (
+                state_key TEXT PRIMARY KEY,
+                cutoff_timestamp TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                operation_id TEXT NOT NULL
+            );
         """
     return """
         PRAGMA foreign_keys = ON;
@@ -399,8 +421,65 @@ def _schema_sql(backend: str | None = None) -> str:
             payload TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS history_daily_totals (
+            period_start TEXT NOT NULL,
+            marketplace TEXT NOT NULL,
+            average_total_cost REAL NOT NULL,
+            min_total_cost REAL NOT NULL,
+            max_total_cost REAL NOT NULL,
+            sample_count INTEGER NOT NULL,
+            first_sample_at TEXT NOT NULL,
+            last_sample_at TEXT NOT NULL,
+            aggregated_at TEXT NOT NULL,
+            PRIMARY KEY (period_start, marketplace)
+        );
+        CREATE TABLE IF NOT EXISTS history_retention_state (
+            state_key TEXT PRIMARY KEY,
+            cutoff_timestamp TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            operation_id TEXT NOT NULL
+        );
     """
 
+
+def ensure_history_rollup_schema(con: DbConnection) -> None:
+    columns = _table_column_names(con, "history_daily_totals")
+    if "calendar_day" not in columns or "period_start" in columns:
+        return
+    con.execute("ALTER TABLE history_daily_totals RENAME TO history_daily_totals_daily_legacy")
+    con.execute(
+        """
+        CREATE TABLE history_daily_totals (
+            period_start TEXT NOT NULL,
+            marketplace TEXT NOT NULL,
+            average_total_cost REAL NOT NULL,
+            min_total_cost REAL NOT NULL,
+            max_total_cost REAL NOT NULL,
+            sample_count INTEGER NOT NULL,
+            first_sample_at TEXT NOT NULL,
+            last_sample_at TEXT NOT NULL,
+            aggregated_at TEXT NOT NULL,
+            PRIMARY KEY (period_start, marketplace)
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_daily_totals_market_period "
+        "ON history_daily_totals(marketplace, period_start)"
+    )
+    con.execute("DROP TABLE history_daily_totals_daily_legacy")
+
+
+def _table_column_names(con: DbConnection, table: str) -> set[str]:
+    if con.backend == "postgres":
+        rows = con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?",
+            (table,),
+        ).fetchall()
+        return {str(row["column_name"]) for row in rows}
+    return {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
 
 def ensure_column(con: DbConnection, table: str, column: str, definition: str) -> None:
     if using_postgres():
@@ -2021,7 +2100,270 @@ def refresh_marketplace_status(
     )
 
 
-def history_totals(since_iso: str | None = None) -> list[sqlite3.Row]:
+def _history_period_start(timestamp: str) -> str:
+    parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local = parsed.astimezone(HISTORY_TIMEZONE)
+    hour = 0 if local.hour < 12 else 12
+    return local.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
+
+
+def _history_calendar_day(timestamp: str) -> str:
+    parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(HISTORY_TIMEZONE).date().isoformat()
+
+
+def _history_cutoff_iso(now: datetime | None = None) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current.astimezone(timezone.utc) - timedelta(hours=24)).isoformat(timespec="milliseconds")
+
+
+def _eligible_compaction_snapshot_ids(con: DbConnection, cutoff: str) -> list[int]:
+    rows = con.execute(
+        "SELECT snapshot_id, timestamp FROM snapshots WHERE timestamp < ? ORDER BY snapshot_id",
+        (cutoff,),
+    ).fetchall()
+    if not rows:
+        return []
+    latest_by_period: dict[str, str] = {}
+    for row in rows:
+        period = _history_period_start(row["timestamp"])
+        latest_by_period[period] = max(latest_by_period.get(period, ""), str(row["timestamp"]))
+    eligible_periods = {
+        period for period, latest_timestamp in latest_by_period.items() if latest_timestamp < cutoff
+    }
+    return [int(row["snapshot_id"]) for row in rows if _history_period_start(row["timestamp"]) in eligible_periods]
+
+
+def _history_total_rows_for_snapshot_ids(
+    con: DbConnection,
+    snapshot_ids: list[int],
+) -> list[dict]:
+    if not snapshot_ids:
+        return []
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    multiplier_expr = (
+        "LEAST(GREATEST(COALESCE(bi.multiplier, 1), 1), 1000)"
+        if con.backend == "postgres"
+        else "MIN(MAX(COALESCE(bi.multiplier, 1), 1), 1000)"
+    )
+    rows = con.execute(
+        f"""
+        WITH snapshot_marketplaces AS (
+            SELECT DISTINCT snapshot_id, marketplace FROM price_points
+            WHERE snapshot_id IN ({placeholders})
+        ), totals AS (
+            SELECT s.snapshot_id, s.timestamp, sm.marketplace,
+                SUM(COALESCE(pp.normalized_price,
+                    CASE WHEN sm.marketplace IN ('Buff163', 'YouPin')
+                         THEN COALESCE(c5game.normalized_price, baseline.normalized_price)
+                         WHEN sm.marketplace != ? THEN baseline.normalized_price
+                         ELSE NULL END) * {multiplier_expr}) AS total_cost
+            FROM snapshots s
+            JOIN snapshot_marketplaces sm ON sm.snapshot_id = s.snapshot_id
+            JOIN basket_items bi ON bi.active = 1
+            LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
+                AND pp.marketplace = sm.marketplace AND pp.item_id = bi.item_id
+                AND pp.fetch_status = 'ok' AND pp.normalized_price IS NOT NULL
+            LEFT JOIN price_points baseline ON baseline.snapshot_id = s.snapshot_id
+                AND baseline.marketplace = ? AND baseline.item_id = bi.item_id
+                AND baseline.fetch_status = 'ok' AND baseline.normalized_price IS NOT NULL
+            LEFT JOIN price_points c5game ON c5game.snapshot_id = s.snapshot_id
+                AND c5game.marketplace = 'C5Game' AND c5game.item_id = bi.item_id
+                AND c5game.fetch_status = 'ok' AND c5game.normalized_price IS NOT NULL
+            WHERE s.snapshot_id IN ({placeholders})
+            GROUP BY s.snapshot_id, s.timestamp, sm.marketplace
+        )
+        SELECT * FROM totals WHERE total_cost IS NOT NULL
+        ORDER BY timestamp, marketplace
+        """,
+        [*snapshot_ids, BASELINE_MARKETPLACE, BASELINE_MARKETPLACE, *snapshot_ids],
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+def _history_total_rows_for_snapshots(
+    con: DbConnection,
+    *,
+    before_iso: str | None = None,
+    since_iso: str | None = None,
+) -> list[dict]:
+    params: list[str] = [BASELINE_MARKETPLACE, BASELINE_MARKETPLACE, BASELINE_MARKETPLACE]
+    where = "WHERE bi.active = 1"
+    if before_iso:
+        where += " AND s.timestamp < ?"
+        params.append(before_iso)
+    if since_iso:
+        where += " AND s.timestamp >= ?"
+        params.append(since_iso)
+    multiplier_expr = (
+        "LEAST(GREATEST(COALESCE(bi.multiplier, 1), 1), 1000)"
+        if con.backend == "postgres"
+        else "MIN(MAX(COALESCE(bi.multiplier, 1), 1), 1000)"
+    )
+    rows = con.execute(
+        f"""
+        WITH snapshot_marketplaces AS (
+            SELECT DISTINCT snapshot_id, marketplace FROM price_points
+        ), totals AS (
+            SELECT s.snapshot_id, s.timestamp, sm.marketplace,
+                SUM(COALESCE(pp.normalized_price,
+                    CASE WHEN sm.marketplace IN ('Buff163', 'YouPin')
+                         THEN COALESCE(c5game.normalized_price, baseline.normalized_price)
+                         WHEN sm.marketplace != ? THEN baseline.normalized_price
+                         ELSE NULL END) * {multiplier_expr}) AS total_cost,
+                COUNT(pp.normalized_price) AS available_count,
+                SUM(CASE WHEN sm.marketplace != ? AND pp.normalized_price IS NULL AND
+                    (baseline.normalized_price IS NOT NULL OR
+                     (sm.marketplace IN ('Buff163', 'YouPin') AND c5game.normalized_price IS NOT NULL))
+                    THEN 1 ELSE 0 END) AS fallback_count
+            FROM snapshots s
+            JOIN snapshot_marketplaces sm ON sm.snapshot_id = s.snapshot_id
+            JOIN basket_items bi ON bi.active = 1
+            LEFT JOIN price_points pp ON pp.snapshot_id = s.snapshot_id
+                AND pp.marketplace = sm.marketplace AND pp.item_id = bi.item_id
+                AND pp.fetch_status = 'ok' AND pp.normalized_price IS NOT NULL
+            LEFT JOIN price_points baseline ON baseline.snapshot_id = s.snapshot_id
+                AND baseline.marketplace = ? AND baseline.item_id = bi.item_id
+                AND baseline.fetch_status = 'ok' AND baseline.normalized_price IS NOT NULL
+            LEFT JOIN price_points c5game ON c5game.snapshot_id = s.snapshot_id
+                AND c5game.marketplace = 'C5Game' AND c5game.item_id = bi.item_id
+                AND c5game.fetch_status = 'ok' AND c5game.normalized_price IS NOT NULL
+            {where}
+            GROUP BY s.snapshot_id, s.timestamp, sm.marketplace
+        )
+        SELECT * FROM totals WHERE total_cost IS NOT NULL
+        ORDER BY timestamp, marketplace
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
+def history_totals(since_iso: str | None = None) -> list[dict]:
+    with connect() as con:
+        return _history_total_rows_for_snapshots(con, since_iso=since_iso)
+
+
+def history_daily_display_totals(since_iso: str | None = None) -> list[dict]:
+    since_period = _history_period_start(since_iso) if since_iso else None
+    persisted = history_daily_totals(since_period=since_period)
+    persisted_by_key = {(row["period_start"], row["marketplace"]): row for row in persisted}
+    with connect() as con:
+        raw_rows = _history_total_rows_for_snapshots(con, since_iso=since_iso)
+    raw_grouped: dict[tuple[str, str], list[dict]] = {}
+    for row in raw_rows:
+        raw_grouped.setdefault((_history_period_start(row["timestamp"]), str(row["marketplace"])), []).append(row)
+    combined = dict(persisted_by_key)
+    for key, samples in raw_grouped.items():
+        if key in combined:
+            continue
+        values = [float(sample["total_cost"]) for sample in samples]
+        combined[key] = {
+            "period_start": key[0],
+            "marketplace": key[1],
+            "average_total_cost": sum(values) / len(values),
+            "min_total_cost": min(values),
+            "max_total_cost": max(values),
+            "sample_count": len(values),
+            "first_sample_at": samples[0]["timestamp"],
+            "last_sample_at": samples[-1]["timestamp"],
+            "aggregated_at": None,
+        }
+    return [combined[key] for key in sorted(combined)]
+
+def history_daily_totals(
+    *,
+    since_period: str | None = None,
+    until_period: str | None = None,
+) -> list[dict]:
+    where = []
+    params: list[str] = []
+    if since_period:
+        where.append("period_start >= ?")
+        params.append(since_period)
+    if until_period:
+        where.append("period_start <= ?")
+        params.append(until_period)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    with connect() as con:
+        return [dict(row) for row in con.execute(
+            f"SELECT * FROM history_daily_totals {clause} ORDER BY period_start, marketplace",
+            params,
+        ).fetchall()]
+
+
+def compact_history(
+    *,
+    now: datetime | None = None,
+    dry_run: bool = False,
+) -> dict[str, int | str | bool]:
+    cutoff = _history_cutoff_iso(now)
+    operation_id = uuid4().hex
+    with connect() as con:
+        old_snapshot_ids = _eligible_compaction_snapshot_ids(con, cutoff)
+        rows = _history_total_rows_for_snapshot_ids(con, old_snapshot_ids)
+        grouped: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            grouped.setdefault((_history_period_start(row["timestamp"]), str(row["marketplace"])), []).append(row)
+        old_points = 0
+        if old_snapshot_ids:
+            placeholders = ",".join("?" for _ in old_snapshot_ids)
+            old_points = int(con.execute(
+                f"SELECT COUNT(*) AS n FROM price_points WHERE snapshot_id IN ({placeholders})",
+                old_snapshot_ids,
+            ).fetchone()["n"])
+        if dry_run:
+            return {
+                "dry_run": True, "cutoff_timestamp": cutoff,
+                "snapshots": len(old_snapshot_ids), "price_points": old_points,
+                "daily_totals": len(grouped),
+            }
+        aggregated_at = utc_now_iso()
+        for (period_start, marketplace), samples in grouped.items():
+            values = [float(sample["total_cost"]) for sample in samples]
+            con.execute(
+                """
+                INSERT INTO history_daily_totals (
+                    period_start, marketplace, average_total_cost, min_total_cost,
+                    max_total_cost, sample_count, first_sample_at, last_sample_at, aggregated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(period_start, marketplace) DO UPDATE SET
+                    average_total_cost=excluded.average_total_cost,
+                    min_total_cost=excluded.min_total_cost,
+                    max_total_cost=excluded.max_total_cost,
+                    sample_count=excluded.sample_count,
+                    first_sample_at=excluded.first_sample_at,
+                    last_sample_at=excluded.last_sample_at,
+                    aggregated_at=excluded.aggregated_at
+                """,
+                (period_start, marketplace, sum(values) / len(values), min(values), max(values), len(values),
+                 samples[0]["timestamp"], samples[-1]["timestamp"], aggregated_at),
+            )
+        if old_snapshot_ids:
+            placeholders = ",".join("?" for _ in old_snapshot_ids)
+            con.execute(f"DELETE FROM price_points WHERE snapshot_id IN ({placeholders})", old_snapshot_ids)
+            con.execute(f"DELETE FROM snapshots WHERE snapshot_id IN ({placeholders})", old_snapshot_ids)
+        if not dry_run:
+            con.execute(
+                """
+                INSERT INTO history_retention_state(state_key, cutoff_timestamp, completed_at, operation_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(state_key) DO UPDATE SET cutoff_timestamp=excluded.cutoff_timestamp,
+                    completed_at=excluded.completed_at, operation_id=excluded.operation_id
+                """,
+                ("daily_compaction", cutoff, aggregated_at, operation_id),
+            )
+    return {
+        "dry_run": False, "cutoff_timestamp": cutoff,
+        "snapshots": len(old_snapshot_ids), "price_points": old_points,
+        "daily_totals": len(grouped),
+    }
+
+
+
     params: list[str] = []
     where = "WHERE bi.active = 1"
     if since_iso:

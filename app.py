@@ -1725,14 +1725,25 @@ def render_history() -> None:
         default="week",
     )
     since = since_for_range(range_label)
-    rows = cached_history_totals(since_iso=since)
+    daily_range = range_label != "day"
+    if daily_range:
+        rows = db.history_daily_display_totals(since_iso=since)
+    else:
+        rows = cached_history_totals(since_iso=since)
     if not rows:
         st.info("No historical snapshots match this time range.")
         render_update_runs_table()
         return
 
     hist = pd.DataFrame([dict(row) for row in rows])
-    hist["timestamp_utc8"] = to_utc8_datetime_series(hist["timestamp"])
+    if daily_range:
+        hist = hist.rename(columns={"average_total_cost": "total_cost"})
+        hist["timestamp_utc8"] = pd.to_datetime(hist["period_start"])
+        hist["period_label"] = hist["timestamp_utc8"].dt.hour.map(
+            lambda hour: "Morning" if hour < 12 else "Evening"
+        )
+    else:
+        hist["timestamp_utc8"] = to_utc8_datetime_series(hist["timestamp"])
     enabled = set(enabled_marketplace_names())
     hist = hist[hist["marketplace"].isin(enabled)]
     if hist.empty:
@@ -1774,20 +1785,33 @@ def render_history() -> None:
         color="marketplace",
         markers=True,
         color_discrete_map=MARKETPLACE_GRAPH_COLORS,
+        custom_data=["min_total_cost", "max_total_cost", "sample_count", "period_label"] if daily_range else None,
         labels={
             "timestamp_utc8": "Timestamp (UTC+8)",
             "total_cost": "Total basket cost (USD)",
             "marketplace": "Marketplace",
         },
     )
-    fig.update_traces(
-        hovertemplate=(
+    if daily_range:
+        hovertemplate = (
             "<b>%{fullData.name}</b><br>"
-            "Timestamp (UTC+8): %{x}<br>"
-            "Total basket cost: $%{y:,.2f}"
+            "Date: %{x|%Y-%m-%d} (%{customdata[3]})<br>"
+            "Average basket cost: $%{y:,.2f}<br>"
+            "Daily minimum: $%{customdata[0]:,.2f}<br>"
+            "Daily maximum: $%{customdata[1]:,.2f}<br>"
+            "Samples: %{customdata[2]}"
             "<extra></extra>"
         )
-    )
+        fig.update_traces(hovertemplate=hovertemplate)
+    else:
+        fig.update_traces(
+            hovertemplate=(
+                "<b>%{fullData.name}</b><br>"
+                "Timestamp (UTC+8): %{x}<br>"
+                "Total basket cost: $%{y:,.2f}"
+                "<extra></extra>"
+            )
+        )
     fig.update_layout(
         hovermode="closest",
         legend_title_text="",
@@ -1819,7 +1843,7 @@ def render_history() -> None:
     with st.container(key="history_timestamp_table"):
         st.table(
             format_simple_table(
-                format_history_table(chart_df),
+                format_history_table(chart_df, daily=daily_range),
                 {"total_cost": "${:,.2f}"},
                 background="rgba(156, 163, 175, 0.08)",
                 foreground="#ffffff",
@@ -1853,7 +1877,24 @@ def default_history_marketplaces(hist: pd.DataFrame, marketplaces: list[str]) ->
     return [marketplace for marketplace in selected if marketplace in marketplaces] or marketplaces[:1]
 
 
-def format_history_table(chart_df: pd.DataFrame) -> pd.DataFrame:
+def format_history_table(chart_df: pd.DataFrame, *, daily: bool = False) -> pd.DataFrame:
+    if daily:
+        table_df = chart_df[
+            ["period_start", "marketplace", "total_cost", "min_total_cost", "max_total_cost", "sample_count"]
+        ].sort_values(["period_start", "marketplace"], ascending=[False, True])
+        table_df = table_df.rename(
+            columns={
+                "period_start": "date",
+                "total_cost": "average basket cost",
+                "min_total_cost": "daily minimum",
+                "max_total_cost": "daily maximum",
+                "sample_count": "samples",
+            }
+        )
+        table_df["date"] = pd.to_datetime(table_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        table_df["period"] = chart_df.loc[table_df.index, "period_label"].to_numpy()
+        table_df = table_df.sort_values(["date", "marketplace"], ascending=[False, True])
+        return table_df
     table_df = chart_df[
         ["timestamp_utc8", "marketplace", "total_cost", "available_count", "fallback_count"]
     ].sort_values(["timestamp_utc8", "marketplace"], ascending=[False, True])
