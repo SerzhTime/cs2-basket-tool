@@ -9,7 +9,11 @@ from adapters.base import BasketItem, PriceResult
 from adapters.backup_sources import BackupOffer, _parse_priceempire_offers, apply_backup_prices, clear_backup_cache
 from adapters.concurrency import map_concurrently
 from adapters.csfloat import CSFloatAdapter
-from adapters.csgoskins import CSGOSKINSMarketplaceAdapter, clear_csgoskins_cache
+from adapters.csgoskins import (
+    CSGOSKINSMarketplaceAdapter,
+    clear_csgoskins_cache,
+    csgoskins_fetch_diagnostics,
+)
 from adapters.dmarket import DMarketAdapter
 from adapters.skindeck import SkindeckAdapter
 
@@ -83,7 +87,10 @@ class ItemApiConcurrencyTests(unittest.TestCase):
         self.assertEqual([result.market_hash_name for result in results], [item.market_hash_name for item in ITEMS])
         self.assertTrue(all(result.fetch_status == "ok" for result in results))
 
-    def test_csgoskins_parallel_fetch_preserves_result_order(self) -> None:
+    def test_csgoskins_diagnostics_reset_with_cache(self) -> None:
+        clear_csgoskins_cache()
+        self.assertEqual(csgoskins_fetch_diagnostics(), {"direct": 0, "reader": 0, "fallback": 0, "errors": 0})
+
         items = [
             BasketItem(index, f"Item {index}", price_compare_url=f"https://csgoskins.gg/item-{index}")
             for index in range(1, 5)

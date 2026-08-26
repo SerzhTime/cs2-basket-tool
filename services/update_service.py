@@ -11,7 +11,7 @@ import db
 from adapters import PriceResult, build_adapter_registry
 from adapters.backup_sources import apply_backup_prices, clear_backup_cache
 from adapters.base import safe_error_details
-from adapters.csgoskins import clear_csgoskins_cache
+from adapters.csgoskins import clear_csgoskins_cache, csgoskins_fetch_diagnostics
 from calculations import BASELINE_MARKETPLACE
 
 
@@ -133,6 +133,7 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
                 "duration_seconds": round(completed["duration_seconds"], 3),
                 "elapsed_seconds": round(time.perf_counter() - run_started, 3),
                 "provider_group": provider_group,
+                "fetch_routes": csgoskins_fetch_diagnostics() if provider_group == "CSGOSKINS" else None,
             }
         )
         report_progress(f"Completed {adapter.name}")

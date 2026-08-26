@@ -36,6 +36,8 @@ _PAGE_CACHE: dict[str, dict[str, "_Offer"] | Exception] = {}
 _PAGE_CACHE_LOCK = Lock()
 _SESSION: requests.Session | None = None
 _SESSION_LOCK = Lock()
+_FETCH_DIAGNOSTICS = {"direct": 0, "reader": 0, "fallback": 0, "errors": 0}
+_FETCH_DIAGNOSTICS_LOCK = Lock()
 
 
 class NoOffersParsedError(RuntimeError):
@@ -114,7 +116,19 @@ def build_csgoskins_adapters() -> list[CSGOSKINSMarketplaceAdapter]:
 def clear_csgoskins_cache() -> None:
     with _PAGE_CACHE_LOCK:
         _PAGE_CACHE.clear()
+    with _FETCH_DIAGNOSTICS_LOCK:
+        for key in _FETCH_DIAGNOSTICS:
+            _FETCH_DIAGNOSTICS[key] = 0
 
+
+def csgoskins_fetch_diagnostics() -> dict[str, int]:
+    with _FETCH_DIAGNOSTICS_LOCK:
+        return dict(_FETCH_DIAGNOSTICS)
+
+
+def _increment_fetch_diagnostic(key: str) -> None:
+    with _FETCH_DIAGNOSTICS_LOCK:
+        _FETCH_DIAGNOSTICS[key] += 1
 
 def csgoskins_offer(url: str, aliases: list[str]) -> CSGOSKINSOffer | None:
     offer = _find_offer(_load_offers(url), aliases)
@@ -140,11 +154,13 @@ def _load_offers(url: str) -> dict[str, _Offer]:
     for attempt in range(attempts):
         try:
             response, offers = _fetch_and_parse_offers(url)
+            _increment_fetch_diagnostic("reader" if _is_reader_url(response.url) else "direct")
             with _PAGE_CACHE_LOCK:
                 _PAGE_CACHE[url] = offers
             return offers
         except Exception as exc:
             last_error = exc
+            _increment_fetch_diagnostic("errors")
             if attempt < attempts - 1:
                 time.sleep(float(os.getenv("CSGOSKINS_RETRY_BACKOFF_SECONDS", "15")))
         finally:
