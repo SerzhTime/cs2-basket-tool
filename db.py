@@ -1559,9 +1559,7 @@ def _delete_postgres_compacted_history(target: DbConnection, cutoff: str, counts
         snapshot_ids,
     )
     counts["deleted_remote_snapshots"] = len(snapshot_ids)
-
-
-
+def _sync_daily_rollups_to_postgres(source: sqlite3.Connection, target: DbConnection, counts: dict[str, int]) -> None:
     rows = source.execute("SELECT * FROM history_daily_totals ORDER BY period_start, marketplace").fetchall()
     if rows:
         target.executemany(
