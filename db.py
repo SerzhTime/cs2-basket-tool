@@ -5,7 +5,7 @@ import os
 import json
 import hashlib
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Thread
@@ -445,30 +445,32 @@ def _schema_sql(backend: str | None = None) -> str:
 
 def ensure_history_rollup_schema(con: DbConnection) -> None:
     columns = _table_column_names(con, "history_daily_totals")
-    if "calendar_day" not in columns or "period_start" in columns:
-        return
-    con.execute("ALTER TABLE history_daily_totals RENAME TO history_daily_totals_daily_legacy")
-    con.execute(
-        """
-        CREATE TABLE history_daily_totals (
-            period_start TEXT NOT NULL,
-            marketplace TEXT NOT NULL,
-            average_total_cost REAL NOT NULL,
-            min_total_cost REAL NOT NULL,
-            max_total_cost REAL NOT NULL,
-            sample_count INTEGER NOT NULL,
-            first_sample_at TEXT NOT NULL,
-            last_sample_at TEXT NOT NULL,
-            aggregated_at TEXT NOT NULL,
-            PRIMARY KEY (period_start, marketplace)
+    if "period_start" not in columns:
+        # Earlier daily-only previews used calendar_day. They contain no source
+        # data and cannot represent the new two-period-per-day contract; raw
+        # snapshots remain available to rebuild the rollups correctly.
+        con.execute("DROP TABLE IF EXISTS history_daily_totals")
+        numeric_type = "DOUBLE PRECISION" if con.backend == "postgres" else "REAL"
+        con.execute(
+            f"""
+            CREATE TABLE history_daily_totals (
+                period_start TEXT NOT NULL,
+                marketplace TEXT NOT NULL,
+                average_total_cost {numeric_type} NOT NULL,
+                min_total_cost {numeric_type} NOT NULL,
+                max_total_cost {numeric_type} NOT NULL,
+                sample_count INTEGER NOT NULL,
+                first_sample_at TEXT NOT NULL,
+                last_sample_at TEXT NOT NULL,
+                aggregated_at TEXT NOT NULL,
+                PRIMARY KEY (period_start, marketplace)
+            )
+            """
         )
-        """
-    )
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_history_daily_totals_market_period "
         "ON history_daily_totals(marketplace, period_start)"
     )
-    con.execute("DROP TABLE history_daily_totals_daily_legacy")
 
 
 def _table_column_names(con: DbConnection, table: str) -> set[str]:
@@ -1383,6 +1385,8 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
         "checked_snapshots": 0,
         "unchanged_snapshots": 0,
         "full_reconcile": 0,
+        "daily_rollups": 0,
+        "deleted_remote_snapshots": 0,
     }
     manifest = _load_neon_sync_manifest()
     force_full_reconcile = _neon_full_reconcile_due(manifest)
@@ -1395,11 +1399,16 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
         with connect_postgres() as target:
             _acquire_postgres_sync_lock(target)
             target.executescript(_schema_sql("postgres"))
+            ensure_history_rollup_schema(target)
             ensure_price_point_uniqueness(target)
             ensure_update_run_uniqueness(target)
             target.execute("ALTER TABLE update_runs ADD COLUMN IF NOT EXISTS step_details TEXT")
             _sync_basket_items_to_postgres(source, target, counts)
             _sync_marketplaces_to_postgres(source, target, counts)
+            _sync_daily_rollups_to_postgres(source, target, counts)
+            retention_cutoff = _retention_watermark(source)
+            if retention_cutoff:
+                _delete_postgres_compacted_history(target, retention_cutoff, counts)
             update_runs_push_cursor = _sync_update_runs_to_postgres(
                 source,
                 target,
@@ -1486,7 +1495,9 @@ def _sync_sqlite_to_postgres_once() -> dict[str, int]:
                             for timestamp, snapshot in local_snapshots.items()
                         }
                     )
-            _sync_missing_postgres_snapshots_to_sqlite(source, target, counts)
+            _sync_missing_postgres_snapshots_to_sqlite(
+                source, target, counts, retention_cutoff=retention_cutoff
+            )
             update_runs_pull_cursor = _sync_missing_postgres_update_runs_to_sqlite(
                 source,
                 target,
@@ -1520,6 +1531,71 @@ def _is_deadlock_error(exc: Exception) -> bool:
 
 
 _SNAPSHOT_SIGNATURE_VERSION = 2
+
+
+def _retention_watermark(con: DbConnection) -> str | None:
+    row = con.execute(
+        "SELECT cutoff_timestamp FROM history_retention_state WHERE state_key = ?",
+        ("daily_compaction",),
+    ).fetchone()
+    return str(row["cutoff_timestamp"]) if row else None
+
+
+def _delete_postgres_compacted_history(target: DbConnection, cutoff: str, counts: dict[str, int]) -> None:
+    old_snapshots = target.execute(
+        "SELECT snapshot_id FROM snapshots WHERE timestamp < ?",
+        (cutoff,),
+    ).fetchall()
+    if not old_snapshots:
+        return
+    snapshot_ids = [int(row["snapshot_id"]) for row in old_snapshots]
+    placeholders = ",".join("?" for _ in snapshot_ids)
+    target.execute(
+        f"DELETE FROM price_points WHERE snapshot_id IN ({placeholders})",
+        snapshot_ids,
+    )
+    target.execute(
+        f"DELETE FROM snapshots WHERE snapshot_id IN ({placeholders})",
+        snapshot_ids,
+    )
+    counts["deleted_remote_snapshots"] = len(snapshot_ids)
+
+
+
+    rows = source.execute("SELECT * FROM history_daily_totals ORDER BY period_start, marketplace").fetchall()
+    if rows:
+        target.executemany(
+            """
+            INSERT INTO history_daily_totals (
+                period_start, marketplace, average_total_cost, min_total_cost,
+                max_total_cost, sample_count, first_sample_at, last_sample_at, aggregated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(period_start, marketplace) DO UPDATE SET
+                average_total_cost=excluded.average_total_cost,
+                min_total_cost=excluded.min_total_cost,
+                max_total_cost=excluded.max_total_cost,
+                sample_count=excluded.sample_count,
+                first_sample_at=excluded.first_sample_at,
+                last_sample_at=excluded.last_sample_at,
+                aggregated_at=excluded.aggregated_at
+            """,
+            [tuple(row) for row in rows],
+        )
+        counts["daily_rollups"] = len(rows)
+    state = source.execute(
+        "SELECT * FROM history_retention_state WHERE state_key = ?",
+        ("daily_compaction",),
+    ).fetchone()
+    if state:
+        target.execute(
+            """
+            INSERT INTO history_retention_state(state_key, cutoff_timestamp, completed_at, operation_id)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(state_key) DO UPDATE SET cutoff_timestamp=excluded.cutoff_timestamp,
+                completed_at=excluded.completed_at, operation_id=excluded.operation_id
+            """,
+            tuple(state),
+        )
 
 
 def _neon_full_reconcile_due(manifest: dict) -> bool:
@@ -1791,6 +1867,8 @@ def _sync_missing_postgres_snapshots_to_sqlite(
     target: sqlite3.Connection,
     source: DbConnection,
     counts: dict[str, int],
+    *,
+    retention_cutoff: str | None = None,
 ) -> None:
     local_timestamps = {
         row["timestamp"]
@@ -1801,7 +1879,14 @@ def _sync_missing_postgres_snapshots_to_sqlite(
         for row in target.execute("SELECT item_id, market_hash_name FROM basket_items")
     }
 
-    for snapshot in source.execute("SELECT * FROM snapshots ORDER BY timestamp, snapshot_id").fetchall():
+    query = "SELECT * FROM snapshots"
+    params: tuple = ()
+    if retention_cutoff is not None:
+        query += " WHERE timestamp >= ?"
+        params = (retention_cutoff,)
+    query += " ORDER BY timestamp, snapshot_id"
+    rows = source.execute(query, params).fetchall()
+    for snapshot in rows:
         timestamp = snapshot["timestamp"]
         if timestamp in local_timestamps:
             continue
@@ -2299,10 +2384,12 @@ def compact_history(
     *,
     now: datetime | None = None,
     dry_run: bool = False,
+    connection: DbConnection | None = None,
 ) -> dict[str, int | str | bool]:
     cutoff = _history_cutoff_iso(now)
     operation_id = uuid4().hex
-    with connect() as con:
+    manager = connect() if connection is None else nullcontext(connection)
+    with manager as con:
         old_snapshot_ids = _eligible_compaction_snapshot_ids(con, cutoff)
         rows = _history_total_rows_for_snapshot_ids(con, old_snapshot_ids)
         grouped: dict[tuple[str, str], list[dict]] = {}
