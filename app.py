@@ -1737,6 +1737,10 @@ def render_history() -> None:
 
     hist = pd.DataFrame([dict(row) for row in rows])
     if daily_range:
+        st.caption(
+            "History before the current basket transition includes a fixed "
+            "HaloSkins-based reconstruction offset across all marketplace lines."
+        )
         hist = hist.rename(columns={"average_total_cost": "total_cost"})
         hist["timestamp_utc8"] = pd.to_datetime(hist["period_start"])
         hist["period_label"] = hist["timestamp_utc8"].dt.hour.map(
