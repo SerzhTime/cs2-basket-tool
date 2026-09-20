@@ -15,7 +15,9 @@ class C5GameAdapter:
     requires_credentials = True
 
     def credentials_configured(self) -> bool:
-        return bool(_app_key() and os.getenv("EXCHANGERATE_USD_LATEST_URL"))
+        # fx.fetch_cny_to_usd_rate() has a public fallback provider, so the
+        # merchant app key is the only required C5-specific credential.
+        return bool(_app_key())
 
     def fetch_prices(self, items: Iterable[BasketItem]) -> list[PriceResult]:
         item_list = list(items)

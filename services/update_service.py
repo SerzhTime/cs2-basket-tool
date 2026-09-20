@@ -182,6 +182,7 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
         items,
         deadline=time.monotonic() + backup_budget,
     )
+    all_results = apply_high_value_haloskins_ceiling(all_results)
     after_backup = _successful_result_count(all_results)
     update_steps.append(
         {
@@ -207,6 +208,9 @@ def _collect_snapshot(progress_callback=None) -> tuple[int, str, float]:
     report_progress("Applying 24-hour price carry-forward")
     carry_forward_started = time.perf_counter()
     all_results = _carry_forward_recent_prices(all_results)
+    # A carry-forward result originates in a previous snapshot and can bypass
+    # the earlier all-channel validation. Validate it again before saving.
+    all_results = apply_high_value_haloskins_ceiling(all_results)
     update_steps.append(
         {
             "step": "24-hour price carry-forward",
@@ -266,6 +270,63 @@ def _successful_result_count(results: list[PriceResult]) -> int:
         for result in results
         if result.fetch_status == "ok" and db.normalize_to_usd(result.price, result.currency) is not None
     )
+
+
+def apply_high_value_haloskins_ceiling(results: list[PriceResult]) -> list[PriceResult]:
+    """Replace implausibly high non-Halo quotes with the HaloSkins quote.
+
+    This is deliberately applied after all providers and recovery paths have
+    completed, so API, direct-page, and comparison-site prices have identical
+    protection.
+    """
+    halos = {
+        result.market_hash_name: result
+        for result in results
+        if result.marketplace == BASELINE_MARKETPLACE
+        and result.fetch_status == "ok"
+        and db.normalize_to_usd(result.price, result.currency) is not None
+    }
+    high_value_threshold = float(os.getenv("HIGH_VALUE_HALO_THRESHOLD_USD", "100"))
+    max_ratio = float(os.getenv("HIGH_VALUE_HALO_MAX_RATIO", "2.5"))
+    low_value_threshold = float(os.getenv("LOW_VALUE_HALO_THRESHOLD_USD", "1"))
+    low_value_max_ratio = float(os.getenv("LOW_VALUE_HALO_MAX_RATIO", "10"))
+    adjusted: list[PriceResult] = []
+    for result in results:
+        halo = halos.get(result.market_hash_name)
+        price = db.normalize_to_usd(result.price, result.currency)
+        halo_price = (
+            db.normalize_to_usd(halo.price, halo.currency)
+            if halo is not None
+            else None
+        )
+        if (
+            result.marketplace != BASELINE_MARKETPLACE
+            and result.fetch_status == "ok"
+            and price is not None
+            and halo is not None
+            and halo_price is not None
+            and (
+                (price >= high_value_threshold and price >= halo_price * max_ratio)
+                or (halo_price < low_value_threshold and price >= halo_price * low_value_max_ratio)
+            )
+        ):
+            adjusted.append(
+                PriceResult(
+                    marketplace=result.marketplace,
+                    market_hash_name=result.market_hash_name,
+                    price=halo.price,
+                    currency=halo.currency,
+                    stock_count=None,
+                    fetch_status="ok",
+                    error_details=(
+                        f"Fallback to HaloSkins: {result.marketplace} returned ${price:,.2f} "
+                        f"against HaloSkins ${halo_price:,.2f}."
+                    ),
+                )
+            )
+        else:
+            adjusted.append(result)
+    return adjusted
 
 
 def _carry_forward_recent_prices(results: list[PriceResult]) -> list[PriceResult]:

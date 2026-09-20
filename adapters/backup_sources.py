@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 from .base import BasketItem, PriceResult
 from .concurrency import RequestRateLimiter, map_concurrently
 from .csgoskins import csgoskins_offer
+from .cs2skins import clear_cs2skins_cache, cs2skins_offer
+from .direct_market_pages import fetch_direct_market_page_price
 
 
 STEAMANALYST_HOST_MARKETS = {
@@ -93,13 +95,24 @@ def apply_backup_prices(
         if deadline is not None and time.monotonic() >= deadline:
             return None
 
-        offer = _backup_offer(item, result.marketplace, rate_limiter)
+        baseline = baseline_prices.get(result.market_hash_name)
+        offer = _backup_offer(item, result.marketplace, baseline, rate_limiter)
         if offer is None:
             return None
 
-        baseline = baseline_prices.get(result.market_hash_name)
         if baseline is not None and not _passes_baseline_sanity(offer.price, baseline):
-            return None
+            return PriceResult(
+                marketplace=result.marketplace,
+                market_hash_name=result.market_hash_name,
+                price=baseline,
+                currency="USD",
+                stock_count=None,
+                fetch_status="ok",
+                error_details=(
+                    f"Fallback to HaloSkins after {offer.source} returned ${offer.price:,.2f} "
+                    f"against HaloSkins ${baseline:,.2f}."
+                ),
+            )
 
         return PriceResult(
             marketplace=result.marketplace,
@@ -122,14 +135,31 @@ def apply_backup_prices(
 
 
 def clear_backup_cache() -> None:
+    clear_cs2skins_cache()
     with _STEAMANALYST_CACHE_LOCK:
         _STEAMANALYST_CACHE.clear()
     with _PRICEEMPIRE_CACHE_LOCK:
         _PRICEEMPIRE_CACHE.clear()
 
 
-def _backup_offer(item: BasketItem, marketplace: str, rate_limiter: RequestRateLimiter | None = None) -> BackupOffer | None:
+def _backup_offer(
+    item: BasketItem,
+    marketplace: str,
+    baseline_price: float | None,
+    rate_limiter: RequestRateLimiter | None = None,
+) -> BackupOffer | None:
     offer = _csgoskins_offer(item, marketplace)
+    if offer is not None:
+        return offer
+    if marketplace == "Exeskins":
+        direct = fetch_direct_market_page_price(marketplace, item, baseline_price)
+        if direct.result.fetch_status == "ok" and direct.result.price is not None:
+            return BackupOffer(
+                marketplace=marketplace,
+                price=direct.result.price,
+                source="direct Exeskins page",
+            )
+    offer = _cs2skins_offer(item, marketplace, rate_limiter)
     if offer is not None:
         return offer
     offer = _priceempire_offer(item, marketplace, rate_limiter)
@@ -138,6 +168,24 @@ def _backup_offer(item: BasketItem, marketplace: str, rate_limiter: RequestRateL
     if item.steamanalyst_url:
         return _steamanalyst_offer(item.steamanalyst_url, marketplace, rate_limiter)
     return None
+
+
+def _cs2skins_offer(
+    item: BasketItem,
+    marketplace: str,
+    rate_limiter: RequestRateLimiter | None,
+) -> BackupOffer | None:
+    try:
+        offer = cs2skins_offer(item.market_hash_name, marketplace, rate_limiter)
+    except Exception:
+        return None
+    if offer is None:
+        return None
+    return BackupOffer(
+        marketplace=marketplace,
+        price=offer.price,
+        source=f"CS2Skins {offer.marketplace}",
+    )
 
 
 def _csgoskins_offer(item: BasketItem, marketplace: str) -> BackupOffer | None:
@@ -308,8 +356,13 @@ def _passes_baseline_sanity(price: float, baseline: float) -> bool:
         return True
     min_ratio = float(os.getenv("STEAMANALYST_BACKUP_MIN_BASELINE_RATIO", "0.1"))
     max_ratio = float(os.getenv("STEAMANALYST_BACKUP_MAX_BASELINE_RATIO", "4.0"))
+    if baseline > 100:
+        max_ratio = min(
+            max_ratio,
+            float(os.getenv("BACKUP_HIGH_VALUE_MAX_BASELINE_RATIO", "2.5")),
+        )
     ratio = price / baseline
-    return min_ratio <= ratio <= max_ratio
+    return min_ratio <= ratio < max_ratio
 
 
 def _normalize_marketplace(value: str) -> str:

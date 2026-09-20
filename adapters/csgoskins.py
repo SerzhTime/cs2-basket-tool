@@ -38,10 +38,21 @@ _SESSION: requests.Session | None = None
 _SESSION_LOCK = Lock()
 _FETCH_DIAGNOSTICS = {"direct": 0, "reader": 0, "fallback": 0, "errors": 0}
 _FETCH_DIAGNOSTICS_LOCK = Lock()
+_CLOUDFLARE_BLOCK: "CloudflareChallengeError | None" = None
+_CLOUDFLARE_BLOCK_LOCK = Lock()
 
 
 class NoOffersParsedError(RuntimeError):
     pass
+
+
+class CloudflareChallengeError(RuntimeError):
+    def __init__(self, *, status_code: int, url: str):
+        super().__init__(
+            f"CSGOSKINS blocked by Cloudflare security challenge "
+            f"(status={status_code}, url={url})."
+        )
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -114,11 +125,14 @@ def build_csgoskins_adapters() -> list[CSGOSKINSMarketplaceAdapter]:
 
 
 def clear_csgoskins_cache() -> None:
+    global _CLOUDFLARE_BLOCK
     with _PAGE_CACHE_LOCK:
         _PAGE_CACHE.clear()
     with _FETCH_DIAGNOSTICS_LOCK:
         for key in _FETCH_DIAGNOSTICS:
             _FETCH_DIAGNOSTICS[key] = 0
+    with _CLOUDFLARE_BLOCK_LOCK:
+        _CLOUDFLARE_BLOCK = None
 
 
 def csgoskins_fetch_diagnostics() -> dict[str, int]:
@@ -129,6 +143,19 @@ def csgoskins_fetch_diagnostics() -> dict[str, int]:
 def _increment_fetch_diagnostic(key: str) -> None:
     with _FETCH_DIAGNOSTICS_LOCK:
         _FETCH_DIAGNOSTICS[key] += 1
+
+
+def _blocked_error() -> CloudflareChallengeError | None:
+    with _CLOUDFLARE_BLOCK_LOCK:
+        return _CLOUDFLARE_BLOCK
+
+
+def _trip_cloudflare_breaker(error: CloudflareChallengeError) -> None:
+    global _CLOUDFLARE_BLOCK
+    with _CLOUDFLARE_BLOCK_LOCK:
+        if _CLOUDFLARE_BLOCK is None:
+            _CLOUDFLARE_BLOCK = error
+
 
 def csgoskins_offer(url: str, aliases: list[str]) -> CSGOSKINSOffer | None:
     offer = _find_offer(_load_offers(url), aliases)
@@ -142,6 +169,10 @@ def csgoskins_offer(url: str, aliases: list[str]) -> CSGOSKINSOffer | None:
 
 
 def _load_offers(url: str) -> dict[str, _Offer]:
+    blocked = _blocked_error()
+    if blocked is not None:
+        raise blocked
+
     with _PAGE_CACHE_LOCK:
         cached = _PAGE_CACHE.get(url)
     if cached is not None:
@@ -151,6 +182,7 @@ def _load_offers(url: str) -> dict[str, _Offer]:
 
     attempts = max(1, int(os.getenv("CSGOSKINS_RETRIES", "0")) + 1)
     last_error: Exception | None = None
+    challenge_detected = False
     for attempt in range(attempts):
         try:
             response, offers = _fetch_and_parse_offers(url)
@@ -158,16 +190,23 @@ def _load_offers(url: str) -> dict[str, _Offer]:
             with _PAGE_CACHE_LOCK:
                 _PAGE_CACHE[url] = offers
             return offers
+        except CloudflareChallengeError as exc:
+            last_error = exc
+            challenge_detected = True
+            _increment_fetch_diagnostic("errors")
+            _trip_cloudflare_breaker(exc)
+            break
         except Exception as exc:
             last_error = exc
             _increment_fetch_diagnostic("errors")
             if attempt < attempts - 1:
                 time.sleep(float(os.getenv("CSGOSKINS_RETRY_BACKOFF_SECONDS", "15")))
         finally:
-            delay = float(os.getenv("CSGOSKINS_DELAY_SECONDS", "4.0"))
-            jitter = float(os.getenv("CSGOSKINS_DELAY_JITTER_SECONDS", "4.0"))
-            if delay > 0 or jitter > 0:
-                time.sleep(delay + random.uniform(0, max(0.0, jitter)))
+            if not challenge_detected:
+                delay = float(os.getenv("CSGOSKINS_DELAY_SECONDS", "4.0"))
+                jitter = float(os.getenv("CSGOSKINS_DELAY_JITTER_SECONDS", "4.0"))
+                if delay > 0 or jitter > 0:
+                    time.sleep(delay + random.uniform(0, max(0.0, jitter)))
 
     error = last_error or RuntimeError("CSGOSKINS request failed.")
     with _PAGE_CACHE_LOCK:
@@ -215,15 +254,19 @@ def _fetch_page(url: str) -> requests.Response:
     if mode == "reader":
         try:
             return _get(_reader_url(url))
-        except requests.RequestException:
+        except (requests.RequestException, CloudflareChallengeError):
             return _get(url)
     if mode == "direct":
         return _get(url)
 
     try:
         return _get(url)
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else None
+    except (requests.HTTPError, CloudflareChallengeError) as exc:
+        status = (
+            exc.status_code
+            if isinstance(exc, CloudflareChallengeError)
+            else exc.response.status_code if exc.response is not None else None
+        )
         if status not in {403, 429}:
             raise
         return _get(_reader_url(url))
@@ -231,8 +274,27 @@ def _fetch_page(url: str) -> requests.Response:
 
 def _get(url: str) -> requests.Response:
     response = _session().get(url, timeout=float(os.getenv("CSGOSKINS_TIMEOUT_SECONDS", "30")))
+    if _is_cloudflare_challenge(response):
+        raise CloudflareChallengeError(
+            status_code=int(response.status_code),
+            url=response.url,
+        )
     response.raise_for_status()
     return response
+
+
+def _is_cloudflare_challenge(response: requests.Response) -> bool:
+    text = (response.text or "").lower()
+    markers = (
+        "security check",
+        "just a moment",
+        "reviewing the security of your connection",
+        "target url returned error 403",
+        "cf-chl-",
+    )
+    return any(marker in text for marker in markers) and (
+        response.status_code in {200, 403, 429}
+    )
 
 
 def _reader_url(url: str) -> str:

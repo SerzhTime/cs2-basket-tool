@@ -143,7 +143,12 @@ CSGOSKINS_RETRIES=0
 
 Tested live against the real site up to 6 concurrent workers with zero errors; `3` is the shipped default and cut a full 40-item basket's CSGOSKINS phase from roughly 6-10 minutes (sequential) to about 90 seconds. Raise it further only if you've confirmed it stays error-free for your basket size.
 
-If CSGOSKINS blocks requests or a marketplace is missing on a page, the row is stored as missing and the comparison table uses the HaloSkins fallback price for totals.
+If CSGOSKINS returns a Cloudflare security challenge, the adapter trips a
+per-update circuit breaker instead of requesting the remaining item pages.
+Fallback recovery then checks CS2Skins item pages for `CS.MONEY`, `LIS-SKINS`,
+`SkinBaron`, `Skins.com`, `Exeskins`, `Avan.market`, `Tradeit.gg`, `SkinPlace`,
+and `ShadowPay`. Generic Doppler items are aggregated across Phase 1-4;
+unsupported items remain missing rather than receiving a guessed price.
 
 ## Backup page sources
 
